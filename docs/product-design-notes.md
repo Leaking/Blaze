@@ -38,15 +38,20 @@ Research notes:
 Applied decisions:
 
 - Native macOS sidebar and toolbar remain the shell.
+- The sidebar now follows the reference product structure: Overview, Proxies, Rules, Rule Sets, Profiles, Traffic, DNS, Logs, and Settings.
 - Overview uses material panels, status pills, and compact stats to keep the app calm but polished.
+- Overview is a control center with connection, system proxy, local takeover, active profile, latency, diagnostics, traffic, and activity panels.
 - Proxy cards use an adaptive grid similar to professional Mac utilities: scannable names, endpoints, status, and direct actions.
-- Global Proxy mode exposes `Use` directly on each proxy card; Rule-based mode hides that action to avoid confusion.
+- Proxies now use a dense table plus an inspector, matching the reference image's management workflow and making latency, health, favorites, and global selection visible at once.
+- Rules now combine category navigation, a rule list, and a focused inspector/editor panel so simple rule edits do not require opening raw source text.
+- Rule Sets, Traffic, DNS, Logs, and Settings are first-class pages instead of being hidden under generic advanced areas.
+- Global Proxy mode exposes `Use Globally` directly in the proxy inspector; rule-based mode remains the default routing workflow.
 - The command palette uses a modal overlay instead of a separate navigation page, matching command-first Mac tools.
+- The menu bar extra now mirrors the reference quick switch: connection state, active routing, connect/disconnect, auto-select, global policy switching, import, and latency test.
 
 ## Next Product Increments
 
-- Add a menu bar extra for Start/Stop and current mode.
 - Add first-run empty state when no profile has been imported.
-- Add rule editor interactions: enable/disable rules, reorder, add simple domain rule.
-- Add per-group selected proxy cards in Groups, so users do not need to read long policy strings.
+- Add rule editor interactions: enable/disable rules and reorder.
+- Add per-group selected proxy cards in Proxies or Profiles, so users do not need to read long policy strings.
 - Add a packet/request inspector view focused on “what rule matched and why”.

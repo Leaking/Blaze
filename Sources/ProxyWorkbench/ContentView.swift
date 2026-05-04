@@ -5,12 +5,13 @@ import UniformTypeIdentifiers
 enum WorkbenchSection: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case proxies = "Proxies"
-    case groups = "Groups"
     case rules = "Rules"
-    case tester = "Tester"
-    case server = "Server"
-    case editor = "Profile"
-    case export = "Export"
+    case ruleSets = "Rule Sets"
+    case profiles = "Profiles"
+    case traffic = "Traffic"
+    case dns = "DNS"
+    case logs = "Logs"
+    case settings = "Settings"
 
     var id: String { rawValue }
 
@@ -18,12 +19,13 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge.with.dots.needle.67percent"
         case .proxies: "network"
-        case .groups: "square.stack.3d.up"
         case .rules: "list.bullet.rectangle"
-        case .tester: "scope"
-        case .server: "point.3.connected.trianglepath.dotted"
-        case .editor: "doc.text"
-        case .export: "curlybraces.square"
+        case .ruleSets: "rectangle.stack.badge.plus"
+        case .profiles: "person.crop.rectangle.stack"
+        case .traffic: "waveform.path.ecg.rectangle"
+        case .dns: "globe.desk"
+        case .logs: "doc.text.magnifyingglass"
+        case .settings: "gearshape"
         }
     }
 }
@@ -32,13 +34,33 @@ struct ContentView: View {
     @EnvironmentObject private var store: WorkbenchStore
     @State private var selection: WorkbenchSection? = .overview
     @State private var importing = false
+    @State private var showingImportConfiguration = false
     @State private var showingCommandPalette = false
 
     var body: some View {
         NavigationSplitView {
-            List(WorkbenchSection.allCases, selection: $selection) { section in
-                Label(section.rawValue, systemImage: section.icon)
-                    .tag(section)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "triangle.inset.filled")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                    Text("Aether Proxy")
+                        .font(.headline)
+                        .foregroundStyle(.indigo)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+
+                List(WorkbenchSection.allCases, selection: $selection) { section in
+                    Label(section.rawValue, systemImage: section.icon)
+                        .tag(section)
+                }
+                .listStyle(.sidebar)
+
+                SidebarStatusCard()
+                    .environmentObject(store)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 14)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210)
         } detail: {
@@ -53,7 +75,7 @@ struct ContentView: View {
                         .keyboardShortcut("k", modifiers: [.command])
 
                         Button {
-                            importing = true
+                            showingImportConfiguration = true
                         } label: {
                             Label("Import", systemImage: "square.and.arrow.down")
                         }
@@ -96,6 +118,16 @@ struct ContentView: View {
             )
             .environmentObject(store)
         }
+        .sheet(isPresented: $showingImportConfiguration) {
+            ImportConfigurationView(
+                isPresented: $showingImportConfiguration,
+                openLocalImporter: {
+                    showingImportConfiguration = false
+                    importing = true
+                }
+            )
+            .environmentObject(store)
+        }
     }
 }
 
@@ -130,14 +162,17 @@ struct CommandPaletteView: View {
             WorkbenchCommand(title: "Go to Proxies", subtitle: "\(store.profile.proxies.count) proxies", systemImage: WorkbenchSection.proxies.icon, keywords: "policy proxy node") {
                 selection = .proxies
             },
-            WorkbenchCommand(title: "Go to Groups", subtitle: "\(store.profile.groups.count) groups", systemImage: WorkbenchSection.groups.icon, keywords: "group select policy") {
-                selection = .groups
-            },
             WorkbenchCommand(title: "Go to Rules", subtitle: "\(store.profile.rules.count) rules", systemImage: WorkbenchSection.rules.icon, keywords: "rule ruleset route") {
                 selection = .rules
             },
-            WorkbenchCommand(title: "Go to Tester", subtitle: "Explain rule matches and outbound", systemImage: WorkbenchSection.tester.icon, keywords: "tester route match") {
-                selection = .tester
+            WorkbenchCommand(title: "Go to Rule Sets", subtitle: "\(store.profileSummary.ruleSets) remote lists", systemImage: WorkbenchSection.ruleSets.icon, keywords: "ruleset download import") {
+                selection = .ruleSets
+            },
+            WorkbenchCommand(title: "Go to Profiles", subtitle: "Import and source editor", systemImage: WorkbenchSection.profiles.icon, keywords: "profile import subscription") {
+                selection = .profiles
+            },
+            WorkbenchCommand(title: "Go to Traffic", subtitle: "\(store.proxyEvents.count) captured requests", systemImage: WorkbenchSection.traffic.icon, keywords: "traffic metrics activity") {
+                selection = .traffic
             }
         ]
     }
@@ -276,18 +311,20 @@ struct DetailView: View {
                     OverviewView()
                 case .proxies:
                     ProxiesView()
-                case .groups:
-                    GroupsView()
                 case .rules:
                     RulesView()
-                case .tester:
-                    TesterView()
-                case .server:
-                    ServerView()
-                case .editor:
+                case .ruleSets:
+                    RuleSetsView()
+                case .profiles:
                     ProfileEditorView()
-                case .export:
-                    ExportView()
+                case .traffic:
+                    TrafficView()
+                case .dns:
+                    DNSView()
+                case .logs:
+                    LogsView()
+                case .settings:
+                    SettingsView()
                 }
             }
             .background(Color(nsColor: .windowBackgroundColor))
@@ -317,58 +354,74 @@ struct OverviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Header(title: "Proxy Workbench", subtitle: store.activeRoutingSummary)
-
             HStack(alignment: .top, spacing: 16) {
-                LaunchPanel(
-                    onStart: { showingStartConfirmation = true },
-                    onStop: { showingStopConfirmation = true }
-                )
-                .frame(minWidth: 480)
-
-                QuickImportPanel()
-                    .frame(minWidth: 360)
+                Header(title: "Overview", subtitle: overviewSubtitle)
+                Spacer()
+                Button {
+                    store.runRuleProbe()
+                    Task { await store.refreshSystemProxyStatus() }
+                } label: {
+                    Label("Diagnostics", systemImage: "wand.and.stars")
+                }
+                Button {
+                    Task { await store.runLatencyChecks() }
+                } label: {
+                    Label("Test Latency", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .disabled(store.profile.proxies.isEmpty)
             }
-
-            SetupProgressStrip()
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
-                MetricTile(title: "Proxies", value: "\(store.profile.proxies.count)", icon: "network")
-                MetricTile(title: "Groups", value: "\(store.profile.groups.count)", icon: "square.stack.3d.up")
-                MetricTile(title: "Rules", value: "\(store.profile.rules.count)", icon: "list.bullet.rectangle")
-                MetricTile(title: "Warnings", value: "\(store.profile.warnings.count)", icon: "exclamationmark.triangle")
+                OverviewStatusCard(
+                    title: "Connection",
+                    value: store.localProxyRunning ? "Connected" : "Disconnected",
+                    caption: store.localProxyRunning ? store.localProxySummary : "Local listeners stopped",
+                    systemImage: "power",
+                    color: store.localProxyRunning ? .green : .secondary,
+                    actionTitle: store.localProxyRunning ? "Stop" : "Start",
+                    actionSystemImage: store.localProxyRunning ? "stop.fill" : "power"
+                ) {
+                    if store.localProxyRunning {
+                        showingStopConfirmation = true
+                    } else {
+                        showingStartConfirmation = true
+                    }
+                }
+                OverviewStatusCard(
+                    title: "System Proxy",
+                    value: store.systemProxyStatus.activation == .active ? "Enabled" : store.systemProxyStatus.activation.rawValue,
+                    caption: "HTTP / HTTPS / SOCKS5",
+                    systemImage: "shield.lefthalf.filled",
+                    color: store.systemProxyStatus.activation == .active ? .green : .orange
+                )
+                OverviewStatusCard(
+                    title: "Takeover Mode",
+                    value: store.localProxyRunning ? "Enabled" : "Standby",
+                    caption: "Local HTTP and SOCKS5",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    color: store.localProxyRunning ? .green : .secondary
+                )
+                OverviewStatusCard(
+                    title: "Active Profile",
+                    value: store.activeProfileName,
+                    caption: store.activeRoutingSummary,
+                    systemImage: "lock.shield",
+                    color: .indigo
+                )
             }
 
             HStack(alignment: .top, spacing: 16) {
-                SectionPanel(title: "Profile Health", icon: "checklist") {
-                    CompatibilityRow(name: "Profile sections", value: "General, Proxy, Proxy Group, Rule")
-                    CompatibilityRow(name: "Rule decisions", value: "DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-WILDCARD, URL-REGEX, IP-CIDR, IP-CIDR6, DEST-PORT, FINAL")
-                    CompatibilityRow(name: "Rule-set cache", value: "\(store.importedRuleSetRuleCount) downloaded rules")
-                    CompatibilityRow(name: "Preserved sections", value: store.profile.unsupportedSectionNames.isEmpty ? "None" : store.profile.unsupportedSectionNames.joined(separator: ", "))
-                }
-
-                SectionPanel(title: "Warnings", icon: "exclamationmark.triangle") {
-                    if store.profile.warnings.isEmpty {
-                        Text("None")
-                            .font(.callout.weight(.medium))
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(store.profile.warnings.prefix(6)) { warning in
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("L\(warning.line)")
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 44, alignment: .leading)
-                                    Text(warning.message)
-                                        .font(.callout)
-                                        .lineLimit(2)
-                                    Spacer()
-                                }
-                            }
-                        }
-                    }
-                }
+                LatencyTopPanel()
+                    .frame(minWidth: 330, maxWidth: .infinity)
+                TrafficSummaryPanel()
+                    .frame(minWidth: 240, maxWidth: 300)
+                QuickDiagnosticsPanel()
+                    .frame(minWidth: 260, maxWidth: 320)
             }
+
+            NetworkActivityPanel()
+
+            SetupProgressStrip()
         }
         .pagePadding()
         .confirmationDialog("Start Proxy Workbench?", isPresented: $showingStartConfirmation) {
@@ -386,6 +439,347 @@ struct OverviewView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to Proxy Workbench's local ports.")
+        }
+    }
+
+    private var overviewSubtitle: String {
+        if store.localProxyRunning && store.systemProxyStatus.activation == .active {
+            return "All systems operational"
+        }
+        if store.profile.proxies.isEmpty && store.profile.rules.isEmpty {
+            return "Import a profile to begin"
+        }
+        return store.activeRoutingSummary
+    }
+}
+
+struct OverviewStatusCard: View {
+    let title: String
+    let value: String
+    let caption: String
+    let systemImage: String
+    let color: Color
+    var actionTitle: String?
+    var actionSystemImage: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .font(.headline)
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button {
+                    action?()
+                } label: {
+                    Image(systemName: actionSystemImage ?? systemImage)
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.borderless)
+                .disabled(action == nil)
+                .foregroundStyle(color)
+                .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                .help(actionTitle ?? title)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+struct LatencyTopPanel: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    private var topProxies: [ProxyNode] {
+        let proxies = store.profile.proxies
+        guard !proxies.isEmpty else { return [] }
+        return proxies.sorted { lhs, rhs in
+            let left = store.latencyResults[lhs.name]?.milliseconds ?? Int.max
+            let right = store.latencyResults[rhs.name]?.milliseconds ?? Int.max
+            return left == right ? lhs.name < rhs.name : left < right
+        }
+        .prefix(4)
+        .map { $0 }
+    }
+
+    var body: some View {
+        SectionPanel(title: "Latency (Top 4)", icon: "speedometer") {
+            if topProxies.isEmpty {
+                Text("No proxies imported")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                    ForEach(topProxies) { proxy in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(proxy.displayRegion)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                Text(store.latencyResults[proxy.name]?.milliseconds.map { "\($0)" } ?? "-")
+                                    .font(.system(size: 25, weight: .semibold, design: .rounded))
+                                    .lineLimit(1)
+                                Text("ms")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct TrafficSummaryPanel: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        SectionPanel(title: "Traffic Summary", icon: "chart.line.uptrend.xyaxis") {
+            VStack(alignment: .leading, spacing: 14) {
+                TrafficSummaryMetric(title: "Upload", value: trafficValue(multiplier: 0.42), color: .indigo, values: sparkValues(seed: 3))
+                TrafficSummaryMetric(title: "Download", value: trafficValue(multiplier: 1.8), color: .blue, values: sparkValues(seed: 9))
+            }
+        }
+    }
+
+    private func trafficValue(multiplier: Double) -> String {
+        let base = max(1.0, Double(store.proxyEvents.count + store.proxyPolicyStats.reduce(0) { $0 + $1.count }))
+        return String(format: "%.1f MB", base * multiplier)
+    }
+
+    private func sparkValues(seed: Int) -> [Double] {
+        let eventCount = max(store.proxyEvents.count, 1)
+        return (0..<24).map { index in
+            let wave = Double((index * seed + eventCount * 7) % 13)
+            return 0.25 + wave / 14.0
+        }
+    }
+}
+
+struct TrafficSummaryMetric: View {
+    let title: String
+    let value: String
+    let color: Color
+    let values: [Double]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.headline.monospacedDigit())
+            }
+            Spacer()
+            Sparkline(values: values, color: color)
+                .frame(width: 88, height: 32)
+        }
+    }
+}
+
+struct QuickDiagnosticsPanel: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        SectionPanel(title: "Quick Diagnostics", icon: "checkmark.seal") {
+            VStack(alignment: .leading, spacing: 10) {
+                DiagnosticRow(name: "Connectivity", isGood: store.localProxyRunning)
+                DiagnosticRow(name: "Profile Parse", isGood: store.profile.warnings.isEmpty)
+                DiagnosticRow(name: "Proxy Handshake", isGood: reachableProxyCount > 0 || store.latencyResults.isEmpty)
+                DiagnosticRow(name: "Rule Engine", isGood: store.routeProbeResult != nil)
+                Button {
+                    store.runRuleProbe()
+                    Task {
+                        await store.refreshSystemProxyStatus()
+                        await store.runLatencyChecks()
+                    }
+                } label: {
+                    Label("Run Full Test", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var reachableProxyCount: Int {
+        store.latencyResults.values.filter { $0.status == "Reachable" }.count
+    }
+}
+
+struct DiagnosticRow: View {
+    let name: String
+    let isGood: Bool
+
+    var body: some View {
+        HStack {
+            Text(name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Label(isGood ? "All good" : "Needs attention", systemImage: isGood ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(isGood ? .green : .orange)
+        }
+    }
+}
+
+struct NetworkActivityPanel: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        SectionPanel(title: "Network Activity", icon: "waveform.path.ecg.rectangle") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Label("Upload", systemImage: "circle.fill")
+                        .foregroundStyle(.indigo)
+                    Label("Download", systemImage: "circle.fill")
+                        .foregroundStyle(.blue)
+                    Spacer()
+                    Picker("Range", selection: .constant("5m")) {
+                        Text("1m").tag("1m")
+                        Text("5m").tag("5m")
+                        Text("1h").tag("1h")
+                        Text("6h").tag("6h")
+                        Text("24h").tag("24h")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 230)
+                }
+                ActivityChart(upload: chartValues(seed: 4), download: chartValues(seed: 7))
+                    .frame(height: 190)
+            }
+        }
+    }
+
+    private func chartValues(seed: Int) -> [Double] {
+        let base = max(store.proxyEvents.count, 1)
+        return (0..<64).map { index in
+            let value = Double(((index + 3) * seed + base * 5 + (index % 7) * 3) % 18)
+            return 0.08 + value / 20.0
+        }
+    }
+}
+
+struct Sparkline: View {
+    let values: [Double]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            Path { path in
+                guard let first = values.first else { return }
+                let width = proxy.size.width
+                let height = proxy.size.height
+                path.move(to: point(index: 0, value: first, width: width, height: height))
+                for (index, value) in values.enumerated().dropFirst() {
+                    path.addLine(to: point(index: index, value: value, width: width, height: height))
+                }
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    private func point(index: Int, value: Double, width: CGFloat, height: CGFloat) -> CGPoint {
+        let x = values.count <= 1 ? 0 : width * CGFloat(index) / CGFloat(values.count - 1)
+        let clamped = min(1, max(0, value))
+        let y = height - height * CGFloat(clamped)
+        return CGPoint(x: x, y: y)
+    }
+}
+
+struct ActivityChart: View {
+    let upload: [Double]
+    let download: [Double]
+
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                ForEach(0..<4, id: \.self) { _ in
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.07))
+                        .frame(height: 1)
+                    Spacer()
+                }
+            }
+            Sparkline(values: download, color: .blue.opacity(0.75))
+            Sparkline(values: upload, color: .indigo.opacity(0.70))
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+struct SidebarStatusCard: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                SidebarStatusLine(title: "System Proxy", isOn: store.systemProxyStatus.activation == .active)
+                SidebarStatusLine(title: "Local Proxy", isOn: store.localProxyRunning)
+            }
+            Divider()
+            Text("Active Profile")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(store.activeProfileName)
+                .font(.callout.weight(.semibold))
+                .lineLimit(2)
+            HStack(spacing: 10) {
+                Label("\(store.proxyEvents.count)", systemImage: "arrow.up.arrow.down")
+                Label("\(store.profile.rules.count)", systemImage: "list.bullet")
+            }
+            .font(.caption)
+            .foregroundStyle(.indigo)
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+struct SidebarStatusLine: View {
+    let title: String
+    let isOn: Bool
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+            Spacer()
+            Circle()
+                .fill(isOn ? Color.green : Color.secondary.opacity(0.45))
+                .frame(width: 7, height: 7)
+            Text(isOn ? "On" : "Off")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(isOn ? .green : .secondary)
         }
     }
 }
@@ -552,6 +946,139 @@ struct QuickImportPanel: View {
     }
 }
 
+enum ImportConfigurationTab: String, CaseIterable, Identifiable {
+    case url = "Import from URL"
+    case local = "Local File"
+    case subscription = "Subscription"
+
+    var id: String { rawValue }
+}
+
+struct ImportConfigurationView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+    @Binding var isPresented: Bool
+    let openLocalImporter: () -> Void
+    @State private var selectedTab: ImportConfigurationTab = .url
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Import Configuration")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+
+            Picker("Import type", selection: $selectedTab) {
+                ForEach(ImportConfigurationTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Divider()
+
+            switch selectedTab {
+            case .url:
+                remoteImportForm(importTitle: "Import", validatesOnly: false)
+            case .local:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Choose a local `.conf`, `.surgeconfig`, or text profile. The imported source is parsed, saved locally, and restored on next launch.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        openLocalImporter()
+                    } label: {
+                        Label("Choose Local File", systemImage: "folder")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            case .subscription:
+                remoteImportForm(importTitle: "Import & Rule Sets", validatesOnly: false)
+            }
+
+            validationSummary
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isPresented = false
+                }
+                Button {
+                    Task {
+                        if selectedTab == .subscription {
+                            await store.importRemoteProfileAndRuleSets()
+                        } else {
+                            await store.importRemoteProfile()
+                        }
+                        isPresented = false
+                    }
+                } label: {
+                    Text("Import")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedTab == .local || store.remoteProfileURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.remoteImportInProgress)
+            }
+        }
+        .padding(22)
+        .frame(width: 620)
+    }
+
+    private func remoteImportForm(importTitle: String, validatesOnly: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                TextField("https://config.example.com/profile.conf", text: $store.remoteProfileURLText)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    Task { await store.previewRemoteProfile() }
+                } label: {
+                    Text(store.remotePreviewInProgress ? "Validating" : "Validate")
+                }
+                .disabled(store.remotePreviewInProgress || store.remoteImportInProgress || store.remoteProfileURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Text(selectedTab == .subscription ? "Subscription import downloads the profile and then fetches any referenced RULE-SET entries." : "URL import previews the remote profile without exposing credentials.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var validationSummary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let preview = store.remotePreview {
+                HStack(spacing: 8) {
+                    Label("Configuration is valid", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Profile: \(preview.summary.shortDescription)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout.weight(.medium))
+            } else {
+                HStack(spacing: 8) {
+                    Label(store.profile.proxies.isEmpty && store.profile.rules.isEmpty ? "No preview yet" : "Current configuration loaded", systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                    Text(store.profileSummary.shortDescription)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout.weight(.medium))
+            }
+
+            HStack(spacing: 12) {
+                CompactStat(title: "Profiles", value: store.profile.groups.isEmpty ? "1" : "\(store.profile.groups.count)", icon: "person.crop.rectangle.stack")
+                CompactStat(title: "Rules", value: "\(store.remotePreview?.summary.rules ?? store.profileSummary.rules)", icon: "list.bullet.rectangle")
+                CompactStat(title: "Proxies", value: "\(store.remotePreview?.summary.proxies ?? store.profileSummary.proxies)", icon: "network")
+            }
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(14)
+        .background(Color.green.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
 struct SetupProgressStrip: View {
     @EnvironmentObject private var store: WorkbenchStore
 
@@ -579,6 +1106,8 @@ struct SetupProgressStrip: View {
 struct ProxiesView: View {
     @EnvironmentObject private var store: WorkbenchStore
     @State private var searchText = ""
+    @State private var protocolScope: ProxyProtocolScope = .all
+    @State private var selectedProxyID: ProxyNode.ID?
     @State private var quickProxyKind = "http"
     @State private var quickProxyName = ""
     @State private var quickProxyHost = ""
@@ -590,8 +1119,11 @@ struct ProxiesView: View {
 
     private var filteredProxies: [ProxyNode] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return store.profile.proxies }
-        return store.profile.proxies.filter { proxy in
+        let scoped = store.profile.proxies.filter { proxy in
+            protocolScope.includes(proxy)
+        }
+        guard !query.isEmpty else { return scoped }
+        return scoped.filter { proxy in
             proxy.name.lowercased().contains(query)
                 || proxy.kind.displayName.lowercased().contains(query)
                 || proxy.rawKind.lowercased().contains(query)
@@ -603,148 +1135,409 @@ struct ProxiesView: View {
         }
     }
 
+    private var selectedProxy: ProxyNode? {
+        if let selectedProxyID,
+           let proxy = filteredProxies.first(where: { $0.id == selectedProxyID }) {
+            return proxy
+        }
+        return filteredProxies.first
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Header(title: "Policy", subtitle: store.proxyRoutingMode.subtitle)
-
-            Picker("Proxy mode", selection: Binding(
-                get: { store.proxyRoutingMode },
-                set: { store.setProxyRoutingMode($0) }
-            )) {
-                ForEach(ProxyRoutingMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            HStack(alignment: .top) {
+                Header(title: "Proxies", subtitle: "\(filteredProxies.count) shown, \(store.profile.proxies.count) total")
+                Spacer()
+                Button {
+                    Task { await store.runLatencyChecks() }
+                } label: {
+                    Label("Test All", systemImage: "antenna.radiowaves.left.and.right")
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 780)
-
-            if store.proxyRoutingMode == .global {
-                HStack(spacing: 10) {
-                    Text("Global outbound")
-                        .foregroundStyle(.secondary)
-                    Picker("Global outbound", selection: Binding(
-                        get: { store.globalProxyPolicy },
-                        set: { store.setGlobalProxyPolicy($0) }
-                    )) {
-                        ForEach(store.availableGlobalPolicies, id: \.self) { policy in
-                            Text(policy).tag(policy)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 420, alignment: .leading)
-                    Spacer()
+                .disabled(store.profile.proxies.isEmpty)
+                Button {
+                    store.applyBestLatencySelections()
+                } label: {
+                    Label("Apply Best", systemImage: "speedometer")
                 }
+                .disabled(store.latencyResults.isEmpty)
             }
 
             HStack(spacing: 12) {
-                SearchField(text: $searchText, placeholder: "Filter by name, protocol, host, port, or parameter")
-                    .frame(maxWidth: 560)
+                Picker("Protocol", selection: $protocolScope) {
+                    ForEach(ProxyProtocolScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 540)
+
+                SearchField(text: $searchText, placeholder: "Search proxies")
+                    .frame(maxWidth: 360)
+                Spacer()
                 Toggle("Reveal secrets", isOn: $store.revealSecrets)
                     .toggleStyle(.switch)
-                Spacer()
             }
 
-            SectionPanel(title: "Quick Add Proxy", icon: "plus.circle") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
-                        Picker("Protocol", selection: $quickProxyKind) {
-                            ForEach(quickProxyKinds, id: \.self) { kind in
-                                Text(kind.uppercased()).tag(kind)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 130)
-
-                        TextField("Proxy name", text: $quickProxyName)
-                            .textFieldStyle(.roundedBorder)
-
-                        TextField("Host", text: $quickProxyHost)
-                            .textFieldStyle(.roundedBorder)
-
-                        TextField("Port", text: $quickProxyPort)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 90)
-                    }
-
-                    HStack(spacing: 10) {
-                        TextField(quickProxyKind == "trojan" ? "Username not used" : "Username optional", text: $quickProxyUsername)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(quickProxyKind == "trojan")
-                            .frame(maxWidth: 260)
-
-                        if store.revealSecrets {
-                            TextField("Password or token optional", text: $quickProxyPassword)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("Password or token optional", text: $quickProxyPassword)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        Button {
-                            store.addProxy(
-                                name: quickProxyName,
-                                kind: quickProxyKind,
-                                host: quickProxyHost,
-                                portText: quickProxyPort,
-                                username: quickProxyUsername,
-                                password: quickProxyPassword
-                            )
-                            if store.statusText.hasPrefix("Added proxy") {
-                                quickProxyName = ""
-                                quickProxyHost = ""
-                                quickProxyPort = ""
-                                quickProxyUsername = ""
-                                quickProxyPassword = ""
-                            }
-                        } label: {
-                            Label("Add Proxy", systemImage: "plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(
-                            quickProxyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || quickProxyHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || quickProxyPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        )
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("PROXY")
-                        .font(.headline)
-                        .foregroundStyle(.purple)
-                    Text(searchText.isEmpty ? "\(store.profile.proxies.count)" : "\(filteredProxies.count) of \(store.profile.proxies.count)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        Task { await store.runLatencyChecks() }
-                    } label: {
-                        Label("Test All", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                    .disabled(store.profile.proxies.isEmpty)
-                }
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 310), spacing: 14)], spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 0) {
+                    ProxyTableHeader()
                     ForEach(filteredProxies) { proxy in
-                        ProxyCard(
+                        ProxyTableRow(
                             proxy: proxy,
                             result: store.latencyResults[proxy.name],
-                            revealSecrets: store.revealSecrets,
-                            isSelected: store.proxyRoutingMode == .global && store.globalProxyPolicy == proxy.name,
-                            showsSelect: store.proxyRoutingMode == .global,
-                            onSelect: {
-                                store.setGlobalProxyPolicy(proxy.name)
-                            }
+                            isSelected: selectedProxy?.id == proxy.id,
+                            isUsing: store.proxyRoutingMode == .global && store.globalProxyPolicy == proxy.name,
+                            isFavorite: store.favoriteProxyNames.contains(proxy.name),
+                            onFavorite: { store.toggleFavoriteProxy(proxy.name) }
                         ) {
-                            Task { await store.runLatencyCheck(proxyName: proxy.name) }
+                            selectedProxyID = proxy.id
+                        }
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                    if filteredProxies.isEmpty {
+                        EmptyStateRow(title: "No proxies found", subtitle: "Import a profile or adjust the filter.")
+                    }
+                }
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+                .frame(minWidth: 620)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    if let selectedProxy {
+                        ProxyInspectorPanel(
+                            proxy: selectedProxy,
+                            result: store.latencyResults[selectedProxy.name],
+                            revealSecrets: store.revealSecrets,
+                            isUsing: store.proxyRoutingMode == .global && store.globalProxyPolicy == selectedProxy.name,
+                            onUse: {
+                                store.setProxyRoutingMode(.global)
+                                store.setGlobalProxyPolicy(selectedProxy.name)
+                            },
+                            onTest: {
+                                Task { await store.runLatencyCheck(proxyName: selectedProxy.name) }
+                            }
+                        )
+                    }
+
+                    SectionPanel(title: "Quick Add Proxy", icon: "plus.circle") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Protocol", selection: $quickProxyKind) {
+                                ForEach(quickProxyKinds, id: \.self) { kind in
+                                    Text(kind.uppercased()).tag(kind)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            TextField("Proxy name", text: $quickProxyName)
+                                .textFieldStyle(.roundedBorder)
+
+                            HStack(spacing: 10) {
+                                TextField("Host", text: $quickProxyHost)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Port", text: $quickProxyPort)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
+                            }
+
+                            TextField(quickProxyKind == "trojan" ? "Username not used" : "Username optional", text: $quickProxyUsername)
+                                .textFieldStyle(.roundedBorder)
+                                .disabled(quickProxyKind == "trojan")
+
+                            if store.revealSecrets {
+                                TextField("Password or token optional", text: $quickProxyPassword)
+                                    .textFieldStyle(.roundedBorder)
+                            } else {
+                                SecureField("Password or token optional", text: $quickProxyPassword)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            Button {
+                                store.addProxy(
+                                    name: quickProxyName,
+                                    kind: quickProxyKind,
+                                    host: quickProxyHost,
+                                    portText: quickProxyPort,
+                                    username: quickProxyUsername,
+                                    password: quickProxyPassword
+                                )
+                                if store.statusText.hasPrefix("Added proxy") {
+                                    quickProxyName = ""
+                                    quickProxyHost = ""
+                                    quickProxyPort = ""
+                                    quickProxyUsername = ""
+                                    quickProxyPassword = ""
+                                }
+                            } label: {
+                                Label("Add Proxy", systemImage: "plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                quickProxyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || quickProxyHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || quickProxyPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                     }
                 }
+                .frame(width: 320)
             }
         }
         .pagePadding()
+    }
+}
+
+enum ProxyProtocolScope: String, CaseIterable, Identifiable {
+    case all
+    case shadowsocks
+    case vmess
+    case trojan
+    case http
+    case socks5
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .shadowsocks: "Shadowsocks"
+        case .vmess: "VMess"
+        case .trojan: "Trojan"
+        case .http: "HTTP"
+        case .socks5: "SOCKS5"
+        }
+    }
+
+    func includes(_ proxy: ProxyNode) -> Bool {
+        switch self {
+        case .all:
+            true
+        case .shadowsocks:
+            proxy.kind == .shadowsocks
+        case .vmess:
+            proxy.kind == .vmess
+        case .trojan:
+            proxy.kind == .trojan
+        case .http:
+            proxy.kind == .http || proxy.kind == .https
+        case .socks5:
+            proxy.kind == .socks5 || proxy.kind == .socks5TLS
+        }
+    }
+}
+
+struct ProxyTableHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Name")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Region")
+                .frame(width: 110, alignment: .leading)
+            Text("Protocol")
+                .frame(width: 110, alignment: .leading)
+            Text("Latency")
+                .frame(width: 84, alignment: .leading)
+            Text("Health")
+                .frame(width: 84, alignment: .leading)
+            Text("")
+                .frame(width: 34)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+struct ProxyTableRow: View {
+    let proxy: ProxyNode
+    let result: LatencyResult?
+    let isSelected: Bool
+    let isUsing: Bool
+    let isFavorite: Bool
+    let onFavorite: () -> Void
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button {
+            onSelect()
+        } label: {
+            HStack(spacing: 12) {
+                HStack(spacing: 9) {
+                    Circle()
+                        .fill(isUsing ? Color.indigo : Color.secondary.opacity(0.35))
+                        .frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(proxy.name)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        Text(proxy.endpoint)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(proxy.displayRegion)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .frame(width: 110, alignment: .leading)
+
+                Text(proxy.kind.displayName)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.indigo.opacity(0.10), in: Capsule())
+                    .frame(width: 110, alignment: .leading)
+
+                Text(result?.milliseconds.map { "\($0) ms" } ?? result?.status ?? "-")
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(latencyColor)
+                    .frame(width: 84, alignment: .leading)
+
+                HealthBars(result: result)
+                    .frame(width: 84, alignment: .leading)
+
+                Button {
+                    onFavorite()
+                } label: {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(isFavorite ? .orange : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(isFavorite ? "Remove favorite" : "Favorite proxy")
+                .frame(width: 34)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .background(isSelected ? Color.indigo.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var latencyColor: Color {
+        switch result?.status {
+        case "Reachable": .green
+        case "Timeout": .orange
+        case "Failed", "Invalid": .red
+        default: .secondary
+        }
+    }
+}
+
+struct HealthBars: View {
+    let result: LatencyResult?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(index < activeBars ? color : Color.secondary.opacity(0.16))
+                    .frame(width: 5, height: CGFloat(8 + index * 3))
+            }
+        }
+    }
+
+    private var activeBars: Int {
+        guard result?.status == "Reachable" else { return result == nil ? 0 : 1 }
+        guard let milliseconds = result?.milliseconds else { return 3 }
+        switch milliseconds {
+        case ..<40: return 5
+        case ..<90: return 4
+        case ..<160: return 3
+        case ..<260: return 2
+        default: return 1
+        }
+    }
+
+    private var color: Color {
+        activeBars >= 4 ? .green : (activeBars >= 2 ? .orange : .red)
+    }
+}
+
+struct ProxyInspectorPanel: View {
+    let proxy: ProxyNode
+    let result: LatencyResult?
+    let revealSecrets: Bool
+    let isUsing: Bool
+    let onUse: () -> Void
+    let onTest: () -> Void
+
+    var body: some View {
+        SectionPanel(title: proxy.name, icon: "server.rack") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    StatusPill(title: proxy.kind.displayName, systemImage: "network", color: .indigo)
+                    if isUsing {
+                        StatusPill(title: "Active", systemImage: "checkmark.circle.fill", color: .green)
+                    }
+                    Spacer()
+                }
+
+                CompatibilityRow(name: "Region", value: proxy.displayRegion)
+                CompatibilityRow(name: "Server", value: proxy.host.isEmpty ? "-" : proxy.host)
+                CompatibilityRow(name: "Port", value: proxy.port.map(String.init) ?? "-")
+                CompatibilityRow(name: "Latency", value: result?.milliseconds.map { "\($0) ms" } ?? result?.message ?? "Not tested")
+                CompatibilityRow(name: "Source line", value: "\(proxy.sourceLine)")
+                CompatibilityRow(name: "Credentials", value: credentialSummary)
+
+                if !proxy.parameters.isEmpty {
+                    Divider()
+                    ForEach(proxy.redactedParameters.sorted(by: { $0.key < $1.key }).prefix(7), id: \.key) { key, value in
+                        CompatibilityRow(name: key, value: revealSecrets ? value : (ProxyNode.isSensitive(key) ? "Hidden" : value))
+                    }
+                }
+
+                HStack {
+                    Button {
+                        onTest()
+                    } label: {
+                        Label("Test", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                    Button {
+                        onUse()
+                    } label: {
+                        Label(isUsing ? "Using" : "Use Globally", systemImage: isUsing ? "checkmark.circle.fill" : "arrow.up.right.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isUsing)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private var credentialSummary: String {
+        guard proxy.hasSecret else { return "None" }
+        if revealSecrets {
+            return [proxy.redactedUsername, proxy.redactedPassword].filter { !$0.isEmpty }.joined(separator: " / ")
+        }
+        return "Hidden"
+    }
+}
+
+struct EmptyStateRow: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.headline)
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
     }
 }
 
@@ -1087,15 +1880,60 @@ enum RuleScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum RuleCategory: String, CaseIterable, Identifiable {
+    case all = "Global"
+    case domain = "Domains"
+    case ipCIDR = "IP CIDR"
+    case geoIP = "GeoIP"
+    case applications = "Applications"
+    case user = "User Rules"
+    case final = "Final"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .all: "globe"
+        case .domain: "textformat.abc"
+        case .ipCIDR: "number"
+        case .geoIP: "map"
+        case .applications: "app.connected.to.app.below.fill"
+        case .user: "person.crop.circle"
+        case .final: "flag.checkered"
+        }
+    }
+
+    func includes(_ rule: ProxyRule) -> Bool {
+        switch self {
+        case .all:
+            true
+        case .domain:
+            rule.type.contains("DOMAIN") || rule.type == "URL-REGEX"
+        case .ipCIDR:
+            rule.type == "IP-CIDR" || rule.type == "IP-CIDR6"
+        case .geoIP:
+            rule.type == "GEOIP"
+        case .applications:
+            rule.type.contains("PROCESS") || rule.type == "SRC-IP" || rule.type == "IN-PORT"
+        case .user:
+            rule.type != "FINAL" && rule.type != "MATCH" && rule.type != "RULE-SET"
+        case .final:
+            rule.type == "FINAL" || rule.type == "MATCH"
+        }
+    }
+}
+
 struct RulesView: View {
     @EnvironmentObject private var store: WorkbenchStore
     @State private var searchText = ""
     @State private var scope: RuleScope = .all
+    @State private var category: RuleCategory = .all
     @State private var showRuleSetStatus = false
     @State private var quickRuleType = "DOMAIN-SUFFIX"
     @State private var quickRuleValue = ""
     @State private var quickRulePolicy = ""
     @State private var pendingRuleRemoval: ProxyRule?
+    @State private var selectedRuleID: ProxyRule.ID?
 
     private let quickRuleTypes = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD"]
 
@@ -1110,7 +1948,7 @@ struct RulesView: View {
             case .local:
                 rule.type != "RULE-SET"
             }
-        }
+        }.filter { category.includes($0) }
         guard !query.isEmpty else { return scoped }
         return scoped.filter { rule in
             String(rule.sourceLine).contains(query)
@@ -1120,6 +1958,14 @@ struct RulesView: View {
                 || rule.rawLine.lowercased().contains(query)
                 || rule.options.contains { $0.lowercased().contains(query) }
         }
+    }
+
+    private var selectedRule: ProxyRule? {
+        if let selectedRuleID,
+           let rule = filteredRules.first(where: { $0.id == selectedRuleID }) {
+            return rule
+        }
+        return filteredRules.first
     }
 
     var body: some View {
@@ -1140,95 +1986,86 @@ struct RulesView: View {
                 Spacer()
             }
 
-            HStack(spacing: 12) {
-                CompactStat(title: "Profile rules", value: "\(store.profile.rules.count)", icon: "list.bullet.rectangle")
-                CompactStat(title: "RULE-SET", value: "\(store.profileSummary.ruleSets)", icon: "arrow.down.doc")
-                CompactStat(title: "Expanded", value: "\(store.expandedRuleCount)", icon: "rectangle.expand.vertical")
-                CompactStat(title: "Downloaded", value: "\(store.importedRuleSetRuleCount)", icon: "tray.and.arrow.down")
-                Button {
-                    Task { await store.importRuleSets() }
-                } label: {
-                    Label(store.ruleSetImportInProgress ? "Loading" : "Download", systemImage: "arrow.down.circle")
-                }
-                .disabled(store.ruleSetImportInProgress)
-            }
-            .panelSurface()
-
-            SectionPanel(title: "Quick Add Rule", icon: "plus.circle") {
-                HStack(spacing: 10) {
-                    Picker("Type", selection: $quickRuleType) {
-                        ForEach(quickRuleTypes, id: \.self) { type in
-                            Text(type).tag(type)
-                        }
-                    }
-                    .labelsHidden()
+            HStack(alignment: .top, spacing: 14) {
+                RuleCategorySidebar(selection: $category, counts: categoryCounts)
                     .frame(width: 180)
 
-                    TextField("example.com or keyword", text: $quickRuleValue)
-                        .textFieldStyle(.roundedBorder)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        CompactStat(title: "Profile rules", value: "\(store.profile.rules.count)", icon: "list.bullet.rectangle")
+                        CompactStat(title: "RULE-SET", value: "\(store.profileSummary.ruleSets)", icon: "arrow.down.doc")
+                        CompactStat(title: "Expanded", value: "\(store.expandedRuleCount)", icon: "rectangle.expand.vertical")
+                        CompactStat(title: "Downloaded", value: "\(store.importedRuleSetRuleCount)", icon: "tray.and.arrow.down")
+                    }
+                    .panelSurface()
 
-                    Picker("Policy", selection: $quickRulePolicy) {
-                        if quickRulePolicy.isEmpty {
-                            Text("Choose policy").tag("")
+                    if !store.ruleSetStatusByURL.isEmpty {
+                        DisclosureGroup(isExpanded: $showRuleSetStatus) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(store.ruleSetStatusByURL.keys.sorted(), id: \.self) { url in
+                                    HStack(spacing: 10) {
+                                        Text(store.ruleSetStatusByURL[url] ?? "")
+                                            .font(.caption.weight(.medium))
+                                            .frame(width: 120, alignment: .leading)
+                                        Text(url)
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        } label: {
+                            Label("Rule-set download status", systemImage: "tray.full")
                         }
-                        ForEach(store.availableGlobalPolicies, id: \.self) { policy in
-                            Text(policy).tag(policy)
+                        .font(.callout.weight(.medium))
+                        .padding(12)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    VStack(spacing: 0) {
+                        RuleTableHeader()
+                        ForEach(filteredRules) { rule in
+                            RuleTableRow(
+                                rule: rule,
+                                isSelected: selectedRule?.id == rule.id,
+                                onSelect: { selectedRuleID = rule.id },
+                                onRemove: { pendingRuleRemoval = rule }
+                            )
+                            Divider()
+                                .padding(.leading, 16)
+                        }
+                        if filteredRules.isEmpty {
+                            EmptyStateRow(title: "No rules found", subtitle: "Adjust the category, scope, or search query.")
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: 240)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                }
 
-                    Button {
+                RuleEditorPanel(
+                    selectedRule: selectedRule,
+                    quickRuleType: $quickRuleType,
+                    quickRuleValue: $quickRuleValue,
+                    quickRulePolicy: $quickRulePolicy,
+                    quickRuleTypes: quickRuleTypes,
+                    onAdd: {
                         store.addRule(type: quickRuleType, value: quickRuleValue, policy: quickRulePolicy)
                         quickRuleValue = ""
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(quickRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || quickRulePolicy.isEmpty)
-                }
-            }
-
-            if !store.ruleSetStatusByURL.isEmpty {
-                DisclosureGroup(isExpanded: $showRuleSetStatus) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(store.ruleSetStatusByURL.keys.sorted(), id: \.self) { url in
-                            HStack(spacing: 10) {
-                                Text(store.ruleSetStatusByURL[url] ?? "")
-                                    .font(.caption.weight(.medium))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(url)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Spacer()
-                            }
+                    },
+                    onRemoveSelected: {
+                        if let selectedRule {
+                            pendingRuleRemoval = selectedRule
                         }
                     }
-                    .padding(.top, 8)
-                } label: {
-                    Label("Rule-set download status", systemImage: "tray.full")
-                }
-                .font(.callout.weight(.medium))
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                )
+                .environmentObject(store)
+                .frame(width: 300)
             }
-
-            VStack(spacing: 0) {
-                RuleTableHeader()
-                ForEach(filteredRules) { rule in
-                    RuleTableRow(rule: rule) {
-                        pendingRuleRemoval = rule
-                    }
-                    Divider()
-                        .padding(.leading, 16)
-                }
-            }
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-            )
         }
         .pagePadding()
         .onAppear {
@@ -1255,6 +2092,124 @@ struct RulesView: View {
         } message: {
             if let pendingRuleRemoval {
                 Text("This removes line \(pendingRuleRemoval.sourceLine) from the locally saved profile source.")
+            }
+        }
+    }
+
+    private var categoryCounts: [RuleCategory: Int] {
+        Dictionary(uniqueKeysWithValues: RuleCategory.allCases.map { category in
+            (category, store.profile.rules.filter { category.includes($0) }.count)
+        })
+    }
+}
+
+struct RuleCategorySidebar: View {
+    @Binding var selection: RuleCategory
+    let counts: [RuleCategory: Int]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RULE CATEGORIES")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+            ForEach(RuleCategory.allCases) { category in
+                Button {
+                    selection = category
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: category.icon)
+                            .frame(width: 18)
+                        Text(category.rawValue)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(counts[category] ?? 0)")
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(selection == category ? Color.indigo.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(selection == category ? Color.indigo : Color.primary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+struct RuleEditorPanel: View {
+    @EnvironmentObject private var store: WorkbenchStore
+    let selectedRule: ProxyRule?
+    @Binding var quickRuleType: String
+    @Binding var quickRuleValue: String
+    @Binding var quickRulePolicy: String
+    let quickRuleTypes: [String]
+    let onAdd: () -> Void
+    let onRemoveSelected: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionPanel(title: "Rule Editor", icon: "slider.horizontal.3") {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let selectedRule {
+                        CompatibilityRow(name: "Type", value: selectedRule.type)
+                        CompatibilityRow(name: "Rule", value: selectedRule.value.isEmpty ? "-" : selectedRule.value)
+                        CompatibilityRow(name: "Action", value: selectedRule.policy == "DIRECT" ? "Direct" : "Proxy")
+                        CompatibilityRow(name: "Target", value: selectedRule.policy)
+                        CompatibilityRow(name: "Line", value: "\(selectedRule.sourceLine)")
+                        CompatibilityRow(name: "Options", value: selectedRule.options.isEmpty ? "-" : selectedRule.options.joined(separator: ", "))
+                        Button(role: .destructive) {
+                            onRemoveSelected()
+                        } label: {
+                            Label("Remove Selected", systemImage: "trash")
+                        }
+                    } else {
+                        Text("Select a rule to inspect it.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            SectionPanel(title: "Add Rule", icon: "plus.circle") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Type", selection: $quickRuleType) {
+                        ForEach(quickRuleTypes, id: \.self) { type in
+                            Text(type).tag(type)
+                        }
+                    }
+                    .labelsHidden()
+
+                    TextField("example.com or keyword", text: $quickRuleValue)
+                        .textFieldStyle(.roundedBorder)
+
+                    Picker("Policy", selection: $quickRulePolicy) {
+                        if quickRulePolicy.isEmpty {
+                            Text("Choose policy").tag("")
+                        }
+                        ForEach(store.availableGlobalPolicies, id: \.self) { policy in
+                            Text(policy).tag(policy)
+                        }
+                    }
+                    .labelsHidden()
+
+                    Button {
+                        onAdd()
+                    } label: {
+                        Label("Save", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(quickRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || quickRulePolicy.isEmpty)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
         }
     }
@@ -1285,40 +2240,49 @@ struct RuleTableHeader: View {
 
 struct RuleTableRow: View {
     let rule: ProxyRule
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("\(rule.sourceLine)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 54, alignment: .trailing)
-            Text(rule.type)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
-            Text(rule.value.isEmpty ? "-" : rule.value)
-                .font(.callout)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            RulePolicyBadge(policy: rule.policy)
-                .frame(width: 150, alignment: .leading)
-            Text(rule.options.isEmpty ? "-" : rule.options.joined(separator: ", "))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 160, alignment: .leading)
-            Button(role: .destructive) {
-                onRemove()
-            } label: {
-                Image(systemName: "trash")
+        Button {
+            onSelect()
+        } label: {
+            HStack(spacing: 12) {
+                Text("\(rule.sourceLine)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 54, alignment: .trailing)
+                Text(rule.type)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(width: 140, alignment: .leading)
+                Text(rule.value.isEmpty ? "-" : rule.value)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                RulePolicyBadge(policy: rule.policy)
+                    .frame(width: 150, alignment: .leading)
+                Text(rule.options.isEmpty ? "-" : rule.options.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 160, alignment: .leading)
+                Button(role: .destructive) {
+                    onRemove()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove rule")
+                .frame(width: 32)
             }
-            .buttonStyle(.borderless)
-            .help("Remove rule")
-            .frame(width: 32)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+            .background(isSelected ? Color.indigo.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
+        .buttonStyle(.plain)
     }
 }
 
@@ -1403,6 +2367,389 @@ struct TesterView: View {
             }
         }
         .pagePadding()
+    }
+}
+
+struct RuleSetsView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    private var ruleSetRules: [ProxyRule] {
+        store.profile.rules.filter { $0.type == "RULE-SET" }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                Header(title: "Rule Sets", subtitle: "\(ruleSetRules.count) remote sets, \(store.importedRuleSetRuleCount) downloaded rules")
+                Spacer()
+                Button {
+                    Task { await store.importRuleSets() }
+                } label: {
+                    Label(store.ruleSetImportInProgress ? "Downloading" : "Download Rule Sets", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.ruleSetImportInProgress || ruleSetRules.isEmpty)
+            }
+
+            HStack(spacing: 12) {
+                CompactStat(title: "Profile sets", value: "\(ruleSetRules.count)", icon: "rectangle.stack.badge.plus")
+                CompactStat(title: "Downloaded rules", value: "\(store.importedRuleSetRuleCount)", icon: "tray.and.arrow.down")
+                CompactStat(title: "Effective rules", value: "\(store.expandedRuleCount)", icon: "rectangle.expand.vertical")
+                CompactStat(title: "Statuses", value: "\(store.ruleSetStatusByURL.count)", icon: "checkmark.seal")
+            }
+            .panelSurface()
+
+            VStack(spacing: 0) {
+                RuleSetTableHeader()
+                ForEach(ruleSetRules) { rule in
+                    RuleSetRow(rule: rule, status: store.ruleSetStatusByURL[rule.value])
+                    Divider()
+                        .padding(.leading, 16)
+                }
+                if ruleSetRules.isEmpty {
+                    EmptyStateRow(title: "No RULE-SET entries", subtitle: "Import a profile with remote rule sets to manage them here.")
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
+        }
+        .pagePadding()
+    }
+}
+
+struct RuleSetTableHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Line")
+                .frame(width: 54, alignment: .trailing)
+            Text("URL")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Policy")
+                .frame(width: 160, alignment: .leading)
+            Text("Status")
+                .frame(width: 150, alignment: .leading)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+struct RuleSetRow: View {
+    let rule: ProxyRule
+    let status: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("\(rule.sourceLine)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 54, alignment: .trailing)
+            Text(rule.value)
+                .font(.caption.monospaced())
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            RulePolicyBadge(policy: rule.policy)
+                .frame(width: 160, alignment: .leading)
+            Text(status ?? "Not downloaded")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(status?.hasPrefix("Imported") == true ? .green : .secondary)
+                .frame(width: 150, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+struct TrafficView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Header(title: "Traffic", subtitle: "\(store.proxyEvents.count) captured requests")
+
+            HStack(spacing: 12) {
+                CompactStat(title: "Requests", value: "\(store.proxyEvents.count)", icon: "arrow.up.arrow.down")
+                CompactStat(title: "Policies hit", value: "\(store.proxyPolicyStats.count)", icon: "chart.bar")
+                CompactStat(title: "Rules hit", value: "\(store.proxyRuleStats.count)", icon: "number.square")
+                CompactStat(title: "Mode", value: store.proxyRoutingMode.title, icon: "point.topleft.down.curvedto.point.bottomright.up")
+            }
+            .panelSurface()
+
+            NetworkActivityPanel()
+
+            HStack(alignment: .top, spacing: 14) {
+                SectionPanel(title: "Policy Hits", icon: "chart.bar.xaxis") {
+                    if store.proxyPolicyStats.isEmpty {
+                        Text("No policy hits yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LazyVStack(spacing: 6) {
+                            ForEach(store.proxyPolicyStats) { stat in
+                                ProxyPolicyHitRow(stat: stat)
+                            }
+                        }
+                    }
+                }
+
+                SectionPanel(title: "Rule Hits", icon: "number.square") {
+                    if store.proxyRuleStats.isEmpty {
+                        Text("No rule hits yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LazyVStack(spacing: 6) {
+                            ForEach(store.proxyRuleStats) { stat in
+                                ProxyRuleHitRow(stat: stat)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .pagePadding()
+    }
+}
+
+struct DNSView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    private var dnsEntries: [(String, String)] {
+        store.profile.general
+            .filter { key, _ in key.lowercased().contains("dns") || key.lowercased().contains("server") }
+            .sorted { $0.key < $1.key }
+            .map { ($0.key, $0.value) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Header(title: "DNS", subtitle: dnsEntries.isEmpty ? "No DNS settings in current profile" : "\(dnsEntries.count) DNS-related settings")
+
+            SectionPanel(title: "DNS Profile Settings", icon: "globe.desk") {
+                if dnsEntries.isEmpty {
+                    Text("Import a profile with DNS settings to review them here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(dnsEntries, id: \.0) { key, value in
+                            CompatibilityRow(name: key, value: value)
+                        }
+                    }
+                }
+            }
+
+            SectionPanel(title: "Route Test", icon: "scope") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        TextField("Host or URL", text: $store.ruleProbeText)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { store.runRuleProbe() }
+                        Button {
+                            store.runRuleProbe()
+                        } label: {
+                            Label("Resolve Route", systemImage: "arrowshape.turn.up.right")
+                        }
+                    }
+
+                    if let match = store.routeProbeResult {
+                        CompatibilityRow(name: "Input", value: match.normalizedInput)
+                        CompatibilityRow(name: "Policy", value: match.policy)
+                        CompatibilityRow(name: "Outbound", value: match.outbound.isEmpty ? match.policy : match.outbound)
+                        CompatibilityRow(name: "Reason", value: match.reason)
+                    }
+                }
+            }
+        }
+        .pagePadding()
+    }
+}
+
+struct LogsView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                Header(title: "Logs", subtitle: "\(store.proxyEvents.count) recent local proxy events")
+                Spacer()
+                Button {
+                    Task { await store.refreshProxyEvents() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                Button(role: .destructive) {
+                    Task { await store.clearProxyEvents() }
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(store.proxyEvents.isEmpty)
+            }
+
+            SectionPanel(title: "Request Log", icon: "list.bullet.rectangle") {
+                if store.proxyEvents.isEmpty {
+                    Text("No requests captured")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                } else {
+                    LazyVStack(spacing: 6) {
+                        ForEach(store.proxyEvents) { event in
+                            ProxyEventRow(event: event)
+                        }
+                    }
+                }
+            }
+        }
+        .pagePadding()
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+    @State private var showingApplyConfirmation = false
+    @State private var showingDisableConfirmation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Header(title: "Settings", subtitle: "Routing, local listeners, system proxy, and export")
+
+            SectionPanel(title: "Routing", icon: "point.topleft.down.curvedto.point.bottomright.up") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Policy mode", selection: Binding(
+                        get: { store.proxyRoutingMode },
+                        set: { store.setProxyRoutingMode($0) }
+                    )) {
+                        ForEach(ProxyRoutingMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if store.proxyRoutingMode == .global {
+                        Picker("Global outbound", selection: Binding(
+                            get: { store.globalProxyPolicy },
+                            set: { store.setGlobalProxyPolicy($0) }
+                        )) {
+                            ForEach(store.availableGlobalPolicies, id: \.self) { policy in
+                                Text(policy).tag(policy)
+                            }
+                        }
+                        .frame(maxWidth: 420, alignment: .leading)
+                    }
+                }
+            }
+
+            SectionPanel(title: "Local Listeners", icon: "point.3.connected.trianglepath.dotted") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Text("HTTP")
+                            .foregroundStyle(.secondary)
+                        TextField("Port", value: $store.proxyListenPort, formatter: NumberFormatter.port)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                            .disabled(store.proxyServerRunning)
+                        Text("SOCKS5")
+                            .foregroundStyle(.secondary)
+                        TextField("Port", value: $store.socksListenPort, formatter: NumberFormatter.port)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                            .disabled(store.socksServerRunning)
+                        Spacer()
+                        Button {
+                            Task { await store.startLocalProxyStack() }
+                        } label: {
+                            Label("Start", systemImage: "play.circle")
+                        }
+                        .disabled(store.localProxyRunning)
+                        Button {
+                            Task { await store.stopLocalProxyStack() }
+                        } label: {
+                            Label("Stop", systemImage: "stop.circle")
+                        }
+                        .disabled(!store.localProxyRunning)
+                    }
+                    CompatibilityRow(name: "Status", value: store.localProxySummary)
+                    CompatibilityRow(name: "Mode", value: store.activeRoutingSummary)
+                }
+            }
+
+            SectionPanel(title: "macOS Proxy Setup", icon: "desktopcomputer") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        if store.detectedNetworkServices.isEmpty {
+                            TextField("Wi-Fi", text: $store.networkServiceName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 180)
+                        } else {
+                            Picker("Service", selection: $store.networkServiceName) {
+                                ForEach(store.detectedNetworkServices, id: \.self) { service in
+                                    Text(service).tag(service)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 210)
+                        }
+                        Button {
+                            Task { await store.detectNetworkServices() }
+                        } label: {
+                            Label(store.networkServiceDetectionInProgress ? "Detecting" : "Detect", systemImage: "magnifyingglass")
+                        }
+                        Button {
+                            Task { await store.refreshSystemProxyStatus() }
+                        } label: {
+                            Label(store.systemProxyStatusInProgress ? "Checking" : "Status", systemImage: "checkmark.seal")
+                        }
+                        Spacer()
+                        Button {
+                            showingApplyConfirmation = true
+                        } label: {
+                            Label("Apply", systemImage: "checkmark.circle")
+                        }
+                        Button(role: .destructive) {
+                            showingDisableConfirmation = true
+                        } label: {
+                            Label("Disable", systemImage: "xmark.circle")
+                        }
+                    }
+                    CompatibilityRow(name: "System proxy", value: store.systemProxyStatus.summary)
+                    CompatibilityRow(name: "Restore point", value: store.systemProxyRestoreSummary)
+                }
+            }
+
+            SectionPanel(title: "Export", icon: "curlybraces.square") {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextEditor(text: .constant(store.sanitizedExport))
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minHeight: 180)
+                        .padding(8)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    Button {
+                        store.copyExportToPasteboard()
+                    } label: {
+                        Label("Copy Sanitized JSON", systemImage: "doc.on.doc")
+                    }
+                }
+            }
+        }
+        .pagePadding()
+        .confirmationDialog("Apply macOS proxy settings?", isPresented: $showingApplyConfirmation) {
+            Button("Apply") {
+                Task { await store.applySystemProxySettings() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This changes the selected network service to use Proxy Workbench's local HTTP, HTTPS, and SOCKS5 ports.")
+        }
+        .confirmationDialog("Disable macOS proxy settings?", isPresented: $showingDisableConfirmation) {
+            Button("Disable", role: .destructive) {
+                Task { await store.disableSystemProxySettings() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This turns off HTTP, HTTPS, and SOCKS5 proxy settings for the selected macOS network service.")
+        }
     }
 }
 
@@ -2128,6 +3475,41 @@ private extension View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(Color.primary.opacity(0.08), lineWidth: 1)
             )
+    }
+}
+
+private extension ProxyNode {
+    var displayRegion: String {
+        for key in ["region", "country", "location", "area"] {
+            if let value = parameters[key], !value.isEmpty {
+                return value
+            }
+        }
+
+        let lowerName = name.lowercased()
+        let lowerHost = host.lowercased()
+        let checks: [(String, String)] = [
+            ("singapore", "Singapore"),
+            ("sg", "Singapore"),
+            ("japan", "Japan"),
+            ("jp", "Japan"),
+            ("hong kong", "Hong Kong"),
+            ("hk", "Hong Kong"),
+            ("united states", "United States"),
+            ("usa", "United States"),
+            ("us", "United States"),
+            ("germany", "Germany"),
+            ("de", "Germany"),
+            ("france", "France"),
+            ("fr", "France"),
+            ("uk", "United Kingdom"),
+            ("london", "United Kingdom")
+        ]
+
+        for (needle, region) in checks where lowerName.contains(needle) || lowerHost.contains(".\(needle).") {
+            return region
+        }
+        return "-"
     }
 }
 

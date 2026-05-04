@@ -61,6 +61,7 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var proxyEvents: [ProxyServerEvent] = []
     @Published private(set) var proxyPolicyStats: [ProxyPolicyHitStat] = []
     @Published private(set) var proxyRuleStats: [ProxyRuleHitStat] = []
+    @Published private(set) var favoriteProxyNames: Set<String> = []
 
     private let probe = LatencyProbe()
     private var proxyLogStore = ProxyEventStore()
@@ -113,6 +114,19 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    var activeProfileName: String {
+        if !globalProxyPolicy.isEmpty && availableGlobalPolicies.contains(globalProxyPolicy) {
+            return globalProxyPolicy
+        }
+        if let firstGroup = profile.groups.first {
+            return firstGroup.name
+        }
+        if let firstProxy = profile.proxies.first {
+            return firstProxy.name
+        }
+        return "No Profile"
+    }
+
     private var resolvedGlobalProxyPolicy: String {
         if availableGlobalPolicies.contains(globalProxyPolicy) {
             return globalProxyPolicy
@@ -148,6 +162,7 @@ final class WorkbenchStore: ObservableObject {
             proxyRoutingMode = mode
         }
         globalProxyPolicy = defaults.string(forKey: PersistenceKey.globalProxyPolicy) ?? ""
+        favoriteProxyNames = Set(defaults.stringArray(forKey: PersistenceKey.favoriteProxyNames) ?? [])
         restoreSavedSystemProxyRestorePoint()
 
         if let savedSource = defaults.string(forKey: PersistenceKey.sourceText), !savedSource.isEmpty {
@@ -368,6 +383,17 @@ final class WorkbenchStore: ObservableObject {
         saveLocalState()
         let suffix = proxyRoutingMode == .global && localProxyRunning ? "; restart listeners to apply" : ""
         statusText = "Global proxy: \(policy)\(suffix)"
+    }
+
+    func toggleFavoriteProxy(_ name: String) {
+        if favoriteProxyNames.contains(name) {
+            favoriteProxyNames.remove(name)
+            statusText = "Removed \(name) from favorites"
+        } else {
+            favoriteProxyNames.insert(name)
+            statusText = "Favorited \(name)"
+        }
+        saveLocalState()
     }
 
     func bestLatencyPolicy(for group: ProxyGroup) -> String? {
@@ -724,6 +750,7 @@ final class WorkbenchStore: ObservableObject {
         defaults.set(networkServiceName, forKey: PersistenceKey.networkServiceName)
         defaults.set(proxyRoutingMode.rawValue, forKey: PersistenceKey.proxyRoutingMode)
         defaults.set(globalProxyPolicy, forKey: PersistenceKey.globalProxyPolicy)
+        defaults.set(Array(favoriteProxyNames).sorted(), forKey: PersistenceKey.favoriteProxyNames)
         persistSystemProxyRestorePoint()
     }
 
@@ -748,7 +775,7 @@ final class WorkbenchStore: ObservableObject {
             let result = await probe.measure(proxy: proxy)
             latencyResults[proxy.name] = result
         }
-        statusText = "Checked \(candidates.count) endpoints; use Groups > Apply Best Latency to update auto groups"
+        statusText = "Checked \(candidates.count) endpoints; use Proxies > Apply Best to update auto groups"
     }
 
     func runLatencyCheck(proxyName: String) async {
@@ -924,8 +951,9 @@ private enum PersistenceKey {
     static let systemProxyRestorePoint = "systemProxy.restorePoint"
     static let proxyRoutingMode = "policy.routingMode"
     static let globalProxyPolicy = "policy.globalProxyPolicy"
+    static let favoriteProxyNames = "proxies.favoriteNames"
 
-    static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy]
+    static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy, favoriteProxyNames]
 }
 
 private enum NetworkServiceDetectionError: Error, CustomStringConvertible {

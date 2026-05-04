@@ -6,10 +6,10 @@ struct ProxyWorkbenchApp: App {
     @StateObject private var store = WorkbenchStore()
 
     var body: some Scene {
-        WindowGroup("Proxy Workbench") {
+        WindowGroup("Aether Proxy") {
             ContentView()
                 .environmentObject(store)
-                .tint(.teal)
+                .tint(.indigo)
                 .frame(minWidth: 1080, minHeight: 720)
                 .task {
                     store.loadInitialProfile()
@@ -27,28 +27,40 @@ struct ProxyWorkbenchApp: App {
 
         MenuBarExtra {
             VStack(alignment: .leading) {
-                Text(store.localProxyRunning ? "Proxy Workbench: Running" : "Proxy Workbench: Stopped")
+                Text(store.localProxyRunning ? "Aether Proxy: Connected" : "Aether Proxy: Disconnected")
                 Text(store.activeRoutingSummary)
                 Text("HTTP \(store.proxyListenPort) / SOCKS5 \(store.socksListenPort)")
             }
 
             Divider()
 
-            Button("Open Proxy Workbench") {
+            Button("Open Aether Proxy") {
                 ProxyWorkbenchApp.showMainWindow()
             }
 
-            Button("Start Local Listeners") {
-                Task { await store.startLocalProxyStack() }
+            Button("Connect") {
+                Task { await store.startAndApplySystemProxy() }
             }
             .disabled(store.localProxyRunning)
 
-            Button("Stop Local Listeners") {
-                Task { await store.stopLocalProxyStack() }
+            Button("Disconnect") {
+                Task { await store.disableSystemProxyAndStop() }
             }
             .disabled(!store.localProxyRunning)
 
             Divider()
+
+            Menu("Quick Switch") {
+                Button("Auto Select") {
+                    store.setProxyRoutingMode(.ruleBased)
+                }
+                ForEach(Array(store.availableGlobalPolicies.prefix(8)), id: \.self) { policy in
+                    Button(policy) {
+                        store.setProxyRoutingMode(.global)
+                        store.setGlobalProxyPolicy(policy)
+                    }
+                }
+            }
 
             Button("Import URL and Rule Sets") {
                 Task { await store.importRemoteProfileAndRuleSets() }
@@ -62,11 +74,11 @@ struct ProxyWorkbenchApp: App {
 
             Divider()
 
-            Button("Quit Proxy Workbench") {
+            Button("Quit Aether Proxy") {
                 NSApplication.shared.terminate(nil)
             }
         } label: {
-            Label("Proxy Workbench", systemImage: store.localProxyRunning ? "bolt.horizontal.circle.fill" : "network")
+            Label("Aether Proxy", systemImage: store.localProxyRunning ? "triangle.inset.filled" : "network")
         }
     }
 

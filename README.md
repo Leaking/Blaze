@@ -30,9 +30,14 @@ Sources used:
 ## Implemented
 
 - Native macOS SwiftUI shell with sidebar navigation.
+- Aether Proxy style product shell with Overview, Proxies, Rules, Rule Sets, Profiles, Traffic, DNS, Logs, and Settings work areas.
+- Menu bar quick switch for connect/disconnect, auto-select, global policy selection, importing, and endpoint probes.
+- Dashboard-style Overview with connection/system-proxy/takeover/profile status cards, top latency cards, diagnostics, traffic summary, setup progress, and network activity visualization.
 - Editable profile source pane.
 - Import of user-selected local profile text files.
+- Import configuration dialog for URL, local file, and subscription workflows with validation preview.
 - Local persistence for the last parsed profile, subscription URL, listener ports, and selected group policies.
+- Local persistence for favorite proxy markers.
 - Remote profile preview and import from user-pasted `http` or `https` URLs, including plain text and base64-wrapped profile bodies.
 - Safe import summary for remote and local profiles, including source size and counts without exposing credentials.
 - Unit-tested remote profile downloader using a local mock subscription endpoint.
@@ -40,16 +45,20 @@ Sources used:
 - Preservation warnings for unsupported sections such as `[MITM]`, `[Script]`, and rewrite sections.
 - Validation warnings for rule types that are parsed but not matched by the local tester/proxy.
 - Proxy list with protocol, host, port, and redacted credentials.
+- Filterable proxy table with protocol tabs, region inference, latency/health indicators, favorite toggles, and a detail inspector with one-click global use.
 - Proxy group list with member policies and parameters.
 - Search filters for large proxy, group, and rule lists.
 - Manual policy selection for proxy groups; selections are used by the local proxy when it starts.
 - Latency-based auto selection for URL Test, Fallback, Load Balance, and Smart groups after endpoint probes.
 - Rule list with source line, type, value, and policy.
+- Rule category navigation and an inspector/editor surface for adding and removing common domain rules.
+- Dedicated Rule Sets surface for downloading remote `RULE-SET` entries and reviewing import status.
 - User-triggered `RULE-SET` downloader and expander for plain text rule lists.
 - Route tester that follows local proxy order: `skip-proxy`/`bypass-tun`, downloaded `RULE-SET` expansions, then `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-WILDCARD`, `URL-REGEX`, `IP-CIDR`, `IP-CIDR6`, `DEST-PORT`, `FINAL`, and `MATCH`.
 - TCP endpoint reachability and latency checks for parsed proxy endpoints.
 - Local HTTP and SOCKS5 proxy listeners on `127.0.0.1` with plain HTTP forwarding, CONNECT tunneling, `skip-proxy`/`bypass-tun` direct bypass handling, rule-aware group resolution, HTTP/SOCKS5/Trojan upstream forwarding, `DIRECT`/`REJECT` handling, unsupported-upstream blocking, in-app request logging, and policy/rule hit counters.
 - macOS `networksetup` integration for enabling or disabling Web Proxy, Secure Web Proxy, and SOCKS Firewall Proxy against the app's local listener ports, plus read-only detection of available network service names, current system proxy status, and copyable command output.
+- Traffic, DNS, and Logs work areas for request activity, route diagnostics, DNS-related profile settings, and local proxy event review.
 - Sanitized JSON export that redacts password, token, key, secret, certificate, and PSK-like fields.
 - Unit tests for parsing, rule matching, redaction, and local HTTP forwarding.
 - Release build script that creates and optionally installs `/Applications/ProxyWorkbench.app`.
@@ -94,7 +103,6 @@ Notes for pasted subscription-style configs:
 - No HTTP request capture database.
 - No JavaScript rewrite engine.
 - No full implementation of custom proxy protocols such as VMess, Hysteria2, TUIC, Snell, or Shadowsocks encryption. Trojan-over-TLS TCP CONNECT forwarding is implemented, but advanced Trojan extensions are not.
-- No macOS system proxy modification.
 - No automatic macOS system proxy modification. The app runs `networksetup` only when you explicitly click `Apply`, `Disable`, or the quick-start buttons.
 - Named policies that resolve to unsupported proxy nodes are blocked to avoid accidental direct traffic leaks.
 
