@@ -62,6 +62,41 @@ final class LocalHTTPProxyServerTests: XCTestCase {
         XCTAssertTrue(clearedRuleStats.isEmpty)
     }
 
+    func testConnectionFailureLogPreservesRequestContext() async throws {
+        let unreachablePort = try freeLoopbackPort()
+        let logStore = ProxyEventStore()
+        let proxy = LocalHTTPProxyServer(logStore: logStore)
+        let proxyPort = try freeLoopbackPort()
+        try await proxy.start(port: proxyPort)
+        defer {
+            Task { await proxy.stop() }
+        }
+
+        let clientFD = try connectLoopback(port: proxyPort)
+        defer { close(clientFD) }
+
+        let request = """
+        GET http://127.0.0.1:\(unreachablePort)/unreachable HTTP/1.1\r
+        Host: 127.0.0.1:\(unreachablePort)\r
+        Connection: close\r
+        \r
+
+        """
+        try sendAll(request, to: clientFD)
+        let response = readAll(from: clientFD)
+
+        XCTAssertTrue(response.contains("502 Bad Gateway"))
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let events = await logStore.events()
+        XCTAssertEqual(events.first?.method, "GET")
+        XCTAssertEqual(events.first?.host, "127.0.0.1")
+        XCTAssertEqual(events.first?.port, unreachablePort)
+        XCTAssertEqual(events.first?.policy, "DIRECT")
+        XCTAssertEqual(events.first?.status, "Failed")
+        XCTAssertTrue(events.first?.note.contains("connect failed") == true)
+    }
+
     func testRejectRuleBlocksRequestBeforeOriginConnection() async throws {
         let origin = try TinyHTTPServer(responseBody: "should-not-load")
         defer { origin.stop() }

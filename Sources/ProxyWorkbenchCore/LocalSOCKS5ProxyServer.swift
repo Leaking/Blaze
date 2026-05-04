@@ -90,9 +90,13 @@ public actor LocalSOCKS5ProxyServer {
     }
 
     private static func handleClient(_ clientFD: Int32, logStore: ProxyEventStore, routingProfile: ProxyProfile, groupSelections: [String: String]) async {
+        var failureContext = ProxyFailureContext(method: "SOCKS5", target: "-", host: "-", port: 0, policy: "DIRECT", rule: nil, note: "Local SOCKS5 request")
         do {
             try acceptGreeting(from: clientFD)
             let request = try SOCKS5Request.read(from: clientFD)
+            failureContext.target = request.authority
+            failureContext.host = request.host
+            failureContext.port = request.port
             guard request.command == 0x01 else {
                 try sendSOCKSReply(0x07, to: clientFD)
                 close(clientFD)
@@ -100,6 +104,9 @@ public actor LocalSOCKS5ProxyServer {
             }
 
             let route = routeDecision(for: "\(request.host):\(request.port)", profile: routingProfile, groupSelections: groupSelections)
+            failureContext.policy = route.policy
+            failureContext.rule = route.rule
+            failureContext.note = route.note
             switch route.action {
             case .reject:
                 await logStore.append(
@@ -119,11 +126,13 @@ public actor LocalSOCKS5ProxyServer {
 
             case .direct:
                 let remoteFD = try connect(host: request.host, port: request.port)
+                let connectedNote = route.note + "; SOCKS5 direct"
                 await logStore.append(
-                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: route.note + "; SOCKS5 direct")
+                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: connectedNote)
                 )
                 try sendSOCKSReply(0x00, to: clientFD)
-                await tunnel(clientFD, remoteFD)
+                let summary = await tunnel(clientFD, remoteFD)
+                await appendTunnelSummary(summary, request: request, route: route, note: connectedNote, to: logStore)
                 return
 
             case .httpProxy(let upstream):
@@ -132,11 +141,13 @@ public actor LocalSOCKS5ProxyServer {
                 }
                 let remoteFD = try connect(host: upstream.host, port: upstreamPort)
                 try connectViaHTTPProxy(remoteFD, destination: request.destination, upstream: upstream)
+                let connectedNote = route.note + "; HTTP upstream \(upstream.endpoint)"
                 await logStore.append(
-                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: route.note + "; HTTP upstream \(upstream.endpoint)")
+                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: connectedNote)
                 )
                 try sendSOCKSReply(0x00, to: clientFD)
-                await tunnel(clientFD, remoteFD)
+                let summary = await tunnel(clientFD, remoteFD)
+                await appendTunnelSummary(summary, request: request, route: route, note: connectedNote, to: logStore)
                 return
 
             case .socks5Proxy(let upstream):
@@ -145,29 +156,53 @@ public actor LocalSOCKS5ProxyServer {
                 }
                 let remoteFD = try connect(host: upstream.host, port: upstreamPort)
                 try connectViaSOCKS5(remoteFD, destination: request.destination, upstream: upstream)
+                let connectedNote = route.note + "; SOCKS5 upstream \(upstream.endpoint)"
                 await logStore.append(
-                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: route.note + "; SOCKS5 upstream \(upstream.endpoint)")
+                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: connectedNote)
                 )
                 try sendSOCKSReply(0x00, to: clientFD)
-                await tunnel(clientFD, remoteFD)
+                let summary = await tunnel(clientFD, remoteFD)
+                await appendTunnelSummary(summary, request: request, route: route, note: connectedNote, to: logStore)
                 return
 
             case .trojanProxy(let upstream):
                 let connection = try await TrojanUpstreamConnection.connect(upstream: upstream, destinationHost: request.host, destinationPort: request.port)
+                let connectedNote = route.note + "; Trojan upstream \(upstream.endpoint)"
                 await logStore.append(
-                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: route.note + "; Trojan upstream \(upstream.endpoint)")
+                    ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: connectedNote)
                 )
                 try sendSOCKSReply(0x00, to: clientFD)
-                await TrojanUpstreamConnection.tunnel(clientFD: clientFD, upstream: connection)
+                let summary = await TrojanUpstreamConnection.tunnel(clientFD: clientFD, upstream: connection)
+                await appendTunnelSummary(summary, request: request, route: route, note: connectedNote, to: logStore)
                 return
             }
         } catch {
-            await logStore.append(
-                ProxyServerEvent(method: "SOCKS5", target: "-", host: "-", port: 0, policy: "DIRECT", status: "Rejected", note: String(describing: error))
-            )
+            await logStore.append(failureContext.failedEvent(error: error))
             _ = try? sendSOCKSReply(0x01, to: clientFD)
             close(clientFD)
         }
+    }
+
+    private static func appendTunnelSummary(
+        _ summary: ProxyTunnelSummary,
+        request: SOCKS5Request,
+        route: SOCKSRouteDecision,
+        note: String,
+        to logStore: ProxyEventStore
+    ) async {
+        guard summary.status == "Failed" else { return }
+        await logStore.append(
+            ProxyServerEvent(
+                method: "SOCKS5",
+                target: request.authority,
+                host: request.host,
+                port: request.port,
+                policy: route.policy,
+                status: summary.status,
+                rule: route.rule,
+                note: "\(note); \(summary.note)"
+            )
+        )
     }
 
     private static func acceptGreeting(from fd: Int32) throws {
@@ -414,36 +449,48 @@ public actor LocalSOCKS5ProxyServer {
         }
     }
 
-    private static func tunnel(_ leftFD: Int32, _ rightFD: Int32) async {
+    private static func tunnel(_ leftFD: Int32, _ rightFD: Int32) async -> ProxyTunnelSummary {
         let leftToRight = Task.detached(priority: .utility) {
-            relay(from: leftFD, to: rightFD)
+            let result = relay(from: leftFD, to: rightFD)
             shutdown(rightFD, SHUT_WR)
+            return result
         }
         let rightToLeft = Task.detached(priority: .utility) {
-            relay(from: rightFD, to: leftFD)
+            let result = relay(from: rightFD, to: leftFD)
             shutdown(leftFD, SHUT_WR)
+            return result
         }
 
-        _ = await leftToRight.result
+        let download = await rightToLeft.value
         shutdown(leftFD, SHUT_RDWR)
         shutdown(rightFD, SHUT_RDWR)
-        _ = await rightToLeft.result
+        let upload = await leftToRight.value
         close(leftFD)
         close(rightFD)
+        return ProxyTunnelSummary(uploadBytes: upload.bytes, downloadBytes: download.bytes, uploadError: upload.error, downloadError: download.error)
     }
 
-    private static func relay(from sourceFD: Int32, to destinationFD: Int32) {
+    private static func relay(from sourceFD: Int32, to destinationFD: Int32) -> ProxyRelayResult {
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        var bytes = 0
         while true {
             let readCount = recv(sourceFD, &buffer, buffer.count, 0)
-            guard readCount > 0 else { break }
+            if readCount == 0 {
+                return ProxyRelayResult(bytes: bytes, error: nil)
+            }
+            if readCount < 0 {
+                return ProxyRelayResult(bytes: bytes, error: ProxySocketErrorDescription.posix("recv", errno))
+            }
             var sent = 0
             while sent < readCount {
                 let writeCount = buffer.withUnsafeBytes { rawBuffer in
                     send(destinationFD, rawBuffer.baseAddress!.advanced(by: sent), readCount - sent, 0)
                 }
-                guard writeCount > 0 else { return }
+                guard writeCount > 0 else {
+                    return ProxyRelayResult(bytes: bytes, error: ProxySocketErrorDescription.posix("send", errno))
+                }
                 sent += writeCount
+                bytes += writeCount
             }
         }
     }

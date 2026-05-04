@@ -88,21 +88,24 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         connection.cancel()
     }
 
-    static func tunnel(clientFD: Int32, upstream: TrojanUpstreamConnection) async {
+    static func tunnel(clientFD: Int32, upstream: TrojanUpstreamConnection) async -> ProxyTunnelSummary {
         let clientToUpstream = Task.detached(priority: .utility) {
-            await relay(fromClientFD: clientFD, to: upstream)
+            let result = await relay(fromClientFD: clientFD, to: upstream)
             upstream.cancel()
+            return result
         }
         let upstreamToClient = Task.detached(priority: .utility) {
-            await relay(from: upstream, toClientFD: clientFD)
+            let result = await relay(from: upstream, toClientFD: clientFD)
             shutdown(clientFD, SHUT_WR)
+            return result
         }
 
-        _ = await upstreamToClient.result
+        let download = await upstreamToClient.value
         shutdown(clientFD, SHUT_RDWR)
         upstream.cancel()
-        _ = await clientToUpstream.result
+        let upload = await clientToUpstream.value
         close(clientFD)
+        return ProxyTunnelSummary(uploadBytes: upload.bytes, downloadBytes: download.bytes, uploadError: upload.error, downloadError: download.error)
     }
 
     private func start(timeout: DispatchTimeInterval) async throws {
@@ -128,26 +131,37 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         try state.result.get()
     }
 
-    private static func relay(fromClientFD fd: Int32, to upstream: TrojanUpstreamConnection) async {
+    private static func relay(fromClientFD fd: Int32, to upstream: TrojanUpstreamConnection) async -> ProxyRelayResult {
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        var bytes = 0
         while true {
             let count = recv(fd, &buffer, buffer.count, 0)
-            guard count > 0 else { return }
+            if count == 0 {
+                return ProxyRelayResult(bytes: bytes, error: nil)
+            }
+            if count < 0 {
+                return ProxyRelayResult(bytes: bytes, error: ProxySocketErrorDescription.posix("recv", errno))
+            }
             do {
                 try await upstream.send(Data(buffer.prefix(count)))
+                bytes += count
             } catch {
-                return
+                return ProxyRelayResult(bytes: bytes, error: String(describing: error))
             }
         }
     }
 
-    private static func relay(from upstream: TrojanUpstreamConnection, toClientFD fd: Int32) async {
+    private static func relay(from upstream: TrojanUpstreamConnection, toClientFD fd: Int32) async -> ProxyRelayResult {
+        var bytes = 0
         while true {
             do {
-                guard let data = try await upstream.receive(), !data.isEmpty else { return }
+                guard let data = try await upstream.receive(), !data.isEmpty else {
+                    return ProxyRelayResult(bytes: bytes, error: nil)
+                }
                 try sendAll(data, to: fd)
+                bytes += data.count
             } catch {
-                return
+                return ProxyRelayResult(bytes: bytes, error: String(describing: error))
             }
         }
     }

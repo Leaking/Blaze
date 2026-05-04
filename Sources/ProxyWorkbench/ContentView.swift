@@ -389,10 +389,10 @@ struct OverviewView: View {
                 }
                 OverviewStatusCard(
                     title: "System Proxy",
-                    value: store.systemProxyStatus.activation == .active ? "Enabled" : store.systemProxyStatus.activation.rawValue,
-                    caption: "HTTP / HTTPS / SOCKS5",
+                    value: store.systemProxyStatus.activation == .active ? "ProxyWorkbench" : store.systemProxyStatus.activation.rawValue,
+                    caption: store.systemProxyStatus.summary,
                     systemImage: "shield.lefthalf.filled",
-                    color: store.systemProxyStatus.activation == .active ? .green : .orange
+                    color: systemProxyColor
                 )
                 OverviewStatusCard(
                     title: "Takeover Mode",
@@ -450,6 +450,17 @@ struct OverviewView: View {
             return "Import a profile to begin"
         }
         return store.activeRoutingSummary
+    }
+
+    private var systemProxyColor: Color {
+        switch store.systemProxyStatus.activation {
+        case .active:
+            return .green
+        case .partial:
+            return .orange
+        case .inactive, .unknown:
+            return .secondary
+        }
     }
 }
 
@@ -739,8 +750,12 @@ struct SidebarStatusCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                SidebarStatusLine(title: "System Proxy", isOn: store.systemProxyStatus.activation == .active)
-                SidebarStatusLine(title: "Local Proxy", isOn: store.localProxyRunning)
+                SidebarStatusLine(
+                    title: "System Proxy",
+                    value: store.systemProxyStatus.activation == .active ? "Active" : store.systemProxyStatus.activation.rawValue,
+                    isOn: store.systemProxyStatus.activation == .active
+                )
+                SidebarStatusLine(title: "Local Proxy", value: store.localProxyRunning ? "On" : "Off", isOn: store.localProxyRunning)
             }
             Divider()
             Text("Active Profile")
@@ -767,6 +782,7 @@ struct SidebarStatusCard: View {
 
 struct SidebarStatusLine: View {
     let title: String
+    let value: String
     let isOn: Bool
 
     var body: some View {
@@ -777,7 +793,7 @@ struct SidebarStatusLine: View {
             Circle()
                 .fill(isOn ? Color.green : Color.secondary.opacity(0.45))
                 .frame(width: 7, height: 7)
-            Text(isOn ? "On" : "Off")
+            Text(value)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(isOn ? .green : .secondary)
         }
@@ -3171,7 +3187,7 @@ struct ProxyEventRow: View {
                 Text(event.note)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer()
             Text(event.policy)
@@ -3183,11 +3199,23 @@ struct ProxyEventRow: View {
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(event.status == "Connected" ? Color.green.opacity(0.12) : Color.red.opacity(0.12), in: Capsule())
+                .background(statusColor.opacity(0.12), in: Capsule())
+                .foregroundStyle(statusColor)
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusColor: Color {
+        switch event.status {
+        case "Connected":
+            return .green
+        case "Closed":
+            return .secondary
+        default:
+            return .red
+        }
     }
 }
 

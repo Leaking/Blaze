@@ -636,15 +636,27 @@ final class WorkbenchStore: ObservableObject {
     }
 
     func refreshSystemProxyStatus() async {
+        await refreshSystemProxyStatus(updateStatusText: true)
+    }
+
+    private func refreshSystemProxyStatus(updateStatusText: Bool) async {
         let service = networkServiceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !service.isEmpty else {
             systemProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
-            statusText = "System proxy status failed: network service is empty"
+            if updateStatusText {
+                statusText = "System proxy status failed: network service is empty"
+            }
             return
         }
 
-        systemProxyStatusInProgress = true
-        defer { systemProxyStatusInProgress = false }
+        if updateStatusText {
+            systemProxyStatusInProgress = true
+        }
+        defer {
+            if updateStatusText {
+                systemProxyStatusInProgress = false
+            }
+        }
 
         do {
             let outputs = try await Self.systemProxyStatusOutputs(service: service)
@@ -655,10 +667,14 @@ final class WorkbenchStore: ObservableObject {
                 expectedHTTPPort: proxyListenPort,
                 expectedSOCKSPort: socksListenPort
             )
-            statusText = "System proxy status: \(systemProxyStatus.activation.rawValue)"
+            if updateStatusText {
+                statusText = "System proxy status: \(systemProxyStatus.activation.rawValue)"
+            }
         } catch {
             systemProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
-            statusText = "System proxy status failed: \(error)"
+            if updateStatusText {
+                statusText = "System proxy status failed: \(error)"
+            }
         }
     }
 
@@ -866,6 +882,7 @@ final class WorkbenchStore: ObservableObject {
         proxyRefreshTask?.cancel()
         let logStore = proxyLogStore
         proxyRefreshTask = Task { [weak self] in
+            var nextSystemProxyRefresh = Date()
             while !Task.isCancelled {
                 let events = await logStore.events()
                 let stats = await logStore.policyHitStats()
@@ -874,6 +891,10 @@ final class WorkbenchStore: ObservableObject {
                     self?.proxyEvents = events
                     self?.proxyPolicyStats = stats
                     self?.proxyRuleStats = ruleStats
+                }
+                if Date() >= nextSystemProxyRefresh {
+                    await self?.refreshSystemProxyStatus(updateStatusText: false)
+                    nextSystemProxyRefresh = Date().addingTimeInterval(3)
                 }
                 try? await Task.sleep(nanoseconds: 700_000_000)
             }
