@@ -42,6 +42,7 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.enableKeepalive = true
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
+        parameters.preferNoProxies = true
         let queue = DispatchQueue(label: "ProxyWorkbench.Trojan.\(UUID().uuidString)")
         let connection = NWConnection(host: NWEndpoint.Host(upstream.host), port: port, using: parameters)
         let upstreamConnection = TrojanUpstreamConnection(connection: connection, queue: queue)
