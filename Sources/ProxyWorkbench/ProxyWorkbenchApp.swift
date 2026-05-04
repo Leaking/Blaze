@@ -1,9 +1,14 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 @main
 struct ProxyWorkbenchApp: App {
     @StateObject private var store = WorkbenchStore()
+
+    init() {
+        _ = signal(SIGPIPE, SIG_IGN)
+    }
 
     var body: some Scene {
         WindowGroup("Aether Proxy") {

@@ -28,6 +28,7 @@ public actor LocalSOCKS5ProxyServer {
         guard fd >= 0 else {
             throw ProxyServerError.posix("socket", errno)
         }
+        ProxySocketOptions.prepare(fd)
 
         var enabled: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, socklen_t(MemoryLayout<Int32>.size))
@@ -78,6 +79,7 @@ public actor LocalSOCKS5ProxyServer {
         while !Task.isCancelled {
             let clientFD = accept(listenerFD, nil, nil)
             if clientFD >= 0 {
+                ProxySocketOptions.prepare(clientFD)
                 Task.detached(priority: .utility) {
                     await handleClient(clientFD, logStore: logStore, routingProfile: routingProfile, groupSelections: groupSelections)
                 }
@@ -251,6 +253,7 @@ public actor LocalSOCKS5ProxyServer {
         while let address = current {
             let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
             if fd >= 0 {
+                ProxySocketOptions.prepare(fd)
                 if Darwin.connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 {
                     return fd
                 }
