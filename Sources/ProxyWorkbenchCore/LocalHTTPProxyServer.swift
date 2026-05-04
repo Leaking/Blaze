@@ -67,9 +67,11 @@ public struct ProxyRuleHitStat: Identifiable, Hashable, Sendable {
 public actor ProxyEventStore {
     private var storage: [ProxyServerEvent] = []
     private let limit: Int
+    private let diskLogURL: URL?
 
-    public init(limit: Int = 200) {
+    public init(limit: Int = 200, diskLogURL: URL? = nil) {
         self.limit = limit
+        self.diskLogURL = diskLogURL
     }
 
     public func append(_ event: ProxyServerEvent) {
@@ -77,6 +79,7 @@ public actor ProxyEventStore {
         if storage.count > limit {
             storage.removeLast(storage.count - limit)
         }
+        appendToDisk(event)
     }
 
     public func events() -> [ProxyServerEvent] {
@@ -128,6 +131,51 @@ public actor ProxyEventStore {
 
     public func clear() {
         storage.removeAll()
+    }
+
+    public static func defaultDiskLogURL() -> URL? {
+        guard let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return supportDirectory
+            .appendingPathComponent("ProxyWorkbench", isDirectory: true)
+            .appendingPathComponent("proxy-events.log", isDirectory: false)
+    }
+
+    private func appendToDisk(_ event: ProxyServerEvent) {
+        guard let diskLogURL else { return }
+        do {
+            let directory = diskLogURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let line = Self.diskLine(for: event)
+            let data = Data(line.utf8)
+            if FileManager.default.fileExists(atPath: diskLogURL.path) {
+                let handle = try FileHandle(forWritingTo: diskLogURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: diskLogURL, options: .atomic)
+            }
+        } catch {
+            // Disk logging is diagnostic only; request handling must not depend on it.
+        }
+    }
+
+    private static func diskLine(for event: ProxyServerEvent) -> String {
+        let timestamp = ISO8601DateFormatter().string(from: event.date)
+        let rule = event.rule ?? "-"
+        return [
+            timestamp,
+            event.status,
+            event.method,
+            event.host == "-" ? event.target : "\(event.host):\(event.port)",
+            "policy=\(event.policy)",
+            "rule=\(rule)",
+            "note=\(event.note)"
+        ]
+        .map { $0.replacingOccurrences(of: "\n", with: " ") }
+        .joined(separator: " | ") + "\n"
     }
 }
 

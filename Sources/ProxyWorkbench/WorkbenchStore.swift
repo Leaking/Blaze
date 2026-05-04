@@ -64,7 +64,7 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var favoriteProxyNames: Set<String> = []
 
     private let probe = LatencyProbe()
-    private var proxyLogStore = ProxyEventStore()
+    private var proxyLogStore = ProxyEventStore(diskLogURL: ProxyEventStore.defaultDiskLogURL())
     private var proxyServer: LocalHTTPProxyServer?
     private var socksServer: LocalSOCKS5ProxyServer?
     private var proxyRefreshTask: Task<Void, Never>?
