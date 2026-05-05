@@ -166,7 +166,7 @@ public actor LocalSOCKS5ProxyServer {
                 return
 
             case .trojanProxy(let upstream):
-                let connection = try await TrojanUpstreamConnection.connect(upstream: upstream, destinationHost: request.host, destinationPort: request.port)
+                let connection = try await TrojanUpstreamConnection.connect(upstream: upstream, destination: request.destination.trojanAddress)
                 let connectedNote = route.note + "; Trojan upstream \(upstream.endpoint)"
                 await logStore.append(
                     ProxyServerEvent(method: "SOCKS5", target: request.authority, host: request.host, port: request.port, policy: route.policy, status: "Connected", rule: route.rule, note: connectedNote)
@@ -511,14 +511,17 @@ private struct SOCKS5Request: Sendable {
         }
 
         let host: String
+        let trojanAddress: (Int) -> TrojanProtocol.Address
         switch head[3] {
         case 0x01:
             let bytes = try LocalSOCKS5ProxyServer_recvExact(4, from: fd)
             host = bytes.map(String.init).joined(separator: ".")
+            trojanAddress = { .ipv4(bytes, port: $0) }
         case 0x03:
             let length = try LocalSOCKS5ProxyServer_recvExact(1, from: fd)[0]
             let bytes = try LocalSOCKS5ProxyServer_recvExact(Int(length), from: fd)
             host = String(bytes: bytes, encoding: .utf8) ?? ""
+            trojanAddress = { .domainName(host: host, port: $0) }
         case 0x04:
             let bytes = try LocalSOCKS5ProxyServer_recvExact(16, from: fd)
             var storage = bytes
@@ -528,6 +531,7 @@ private struct SOCKS5Request: Sendable {
             }
             let end = string.firstIndex(of: 0) ?? string.endIndex
             host = String(decoding: string[..<end].map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            trojanAddress = { .ipv6(bytes, port: $0) }
         default:
             throw ProxyServerError.socks5("Unsupported address type")
         }
@@ -538,13 +542,14 @@ private struct SOCKS5Request: Sendable {
             throw ProxyServerError.invalidDestination
         }
 
-        return SOCKS5Request(command: head[1], destination: SOCKSDestination(host: host, port: port))
+        return SOCKS5Request(command: head[1], destination: SOCKSDestination(host: host, port: port, trojanAddress: trojanAddress(port)))
     }
 }
 
 private struct SOCKSDestination: Sendable {
     var host: String
     var port: Int
+    var trojanAddress: TrojanProtocol.Address
 }
 
 private enum SOCKSRouteAction: Sendable {
