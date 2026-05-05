@@ -11,7 +11,7 @@ public enum RuleSetImporter {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
-        request.setValue("ProxyWorkbench/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("blaze/0.1", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse,

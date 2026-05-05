@@ -392,9 +392,31 @@ final class LocalHTTPProxyServerTests: XCTestCase {
         let header = try TrojanProtocol.requestHeader(password: "password", host: "127.0.0.1", port: 80)
         let expectedHash = "d63dc919e201d7bc4c825630d2cf25fdc93d4b2f0d46706d29038d01"
         var expected = Data(expectedHash.utf8)
+        expected.append(contentsOf: [13, 10, 0x01, 0x03, 9])
+        expected.append(Data("127.0.0.1".utf8))
+        expected.append(contentsOf: [0, 80, 13, 10])
+
+        XCTAssertEqual(header, expected)
+    }
+
+    func testTrojanRequestHeaderCanPreserveSOCKSIPv4AddressType() throws {
+        let header = try TrojanProtocol.requestHeader(password: "password", address: .ipv4([127, 0, 0, 1], port: 80))
+        let expectedHash = "d63dc919e201d7bc4c825630d2cf25fdc93d4b2f0d46706d29038d01"
+        var expected = Data(expectedHash.utf8)
         expected.append(contentsOf: [13, 10, 0x01, 0x01, 127, 0, 0, 1, 0, 80, 13, 10])
 
         XCTAssertEqual(header, expected)
+    }
+
+    func testTrojanRequestParserExtractsPayload() throws {
+        var request = try TrojanProtocol.requestHeader(password: "password", host: "example.com", port: 443)
+        request.append(Data("GET / HTTP/1.1\r\n\r\n".utf8))
+
+        let parsed = try TrojanProtocol.parseRequest(request)
+
+        XCTAssertEqual(parsed.command, .connect)
+        XCTAssertEqual(parsed.address, .domainName(host: "example.com", port: 443))
+        XCTAssertEqual(parsed.payload, Data("GET / HTTP/1.1\r\n\r\n".utf8))
     }
 
     func testLocalSOCKS5ListenerConnectsDirect() async throws {

@@ -44,7 +44,7 @@ struct ContentView: View {
                     Image(systemName: "triangle.inset.filled")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.indigo)
-                    Text("Aether Proxy")
+                    Text("blaze")
                         .font(.headline)
                         .foregroundStyle(.indigo)
                 }
@@ -247,7 +247,7 @@ struct CommandPaletteView: View {
         }
         .frame(width: 620, height: 460)
         .confirmationDialog(
-            pendingSystemAction == .stop ? "Stop Proxy Workbench?" : "Start Proxy Workbench?",
+            pendingSystemAction == .stop ? "Stop blaze?" : "Start blaze?",
             isPresented: $showingSystemActionConfirmation
         ) {
             if pendingSystemAction == .stop {
@@ -266,7 +266,7 @@ struct CommandPaletteView: View {
             if pendingSystemAction == .stop {
                 Text("This stops local listeners and restores the saved macOS proxy settings when available.")
             } else {
-                Text("This saves the current macOS proxy settings, starts local listeners, and changes the selected network service to Proxy Workbench's local ports.")
+                Text("This saves the current macOS proxy settings, starts local listeners, and changes the selected network service to blaze's local ports.")
             }
         }
     }
@@ -389,7 +389,7 @@ struct OverviewView: View {
                 }
                 OverviewStatusCard(
                     title: "System Proxy",
-                    value: store.systemProxyStatus.activation == .active ? "ProxyWorkbench" : store.systemProxyStatus.activation.rawValue,
+                    value: store.systemProxyStatus.activation == .active ? "blaze" : store.systemProxyStatus.activation.rawValue,
                     caption: store.systemProxyStatus.summary,
                     systemImage: "shield.lefthalf.filled",
                     color: systemProxyColor
@@ -424,7 +424,7 @@ struct OverviewView: View {
             SetupProgressStrip()
         }
         .pagePadding()
-        .confirmationDialog("Start Proxy Workbench?", isPresented: $showingStartConfirmation) {
+        .confirmationDialog("Start blaze?", isPresented: $showingStartConfirmation) {
             Button("Start Proxy") {
                 Task { await store.startAndApplySystemProxy() }
             }
@@ -432,13 +432,13 @@ struct OverviewView: View {
         } message: {
             Text("This saves the current system proxy as a restore point, starts local listeners, and changes the selected macOS network service to use 127.0.0.1:\(store.proxyListenPort) for HTTP/HTTPS and 127.0.0.1:\(store.socksListenPort) for SOCKS5.")
         }
-        .confirmationDialog("Stop Proxy Workbench?", isPresented: $showingStopConfirmation) {
+        .confirmationDialog("Stop blaze?", isPresented: $showingStopConfirmation) {
             Button("Stop Proxy", role: .destructive) {
                 Task { await store.disableSystemProxyAndStop() }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to Proxy Workbench's local ports.")
+            Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to blaze's local ports.")
         }
     }
 
@@ -2756,7 +2756,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This changes the selected network service to use Proxy Workbench's local HTTP, HTTPS, and SOCKS5 ports.")
+            Text("This changes the selected network service to use blaze's local HTTP, HTTPS, and SOCKS5 ports.")
         }
         .confirmationDialog("Disable macOS proxy settings?", isPresented: $showingDisableConfirmation) {
             Button("Disable", role: .destructive) {
@@ -3107,7 +3107,7 @@ struct ServerView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This saves the current system proxy as a restore point, then changes the selected macOS network service to use Proxy Workbench's local HTTP/HTTPS and SOCKS5 ports.")
+            Text("This saves the current system proxy as a restore point, then changes the selected macOS network service to use blaze's local HTTP/HTTPS and SOCKS5 ports.")
         }
         .confirmationDialog("Disable macOS proxy settings?", isPresented: $showingDisableConfirmation) {
             Button("Disable", role: .destructive) {

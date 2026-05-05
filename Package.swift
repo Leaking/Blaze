@@ -3,13 +3,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "ProxyWorkbench",
+    name: "Blaze",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(name: "ProxyWorkbenchCore", targets: ["ProxyWorkbenchCore"]),
-        .executable(name: "ProxyWorkbench", targets: ["ProxyWorkbench"])
+        .executable(name: "blaze", targets: ["blaze"])
     ],
     dependencies: [],
     targets: [
@@ -18,7 +18,7 @@ let package = Package(
             path: "Sources/ProxyWorkbenchCore"
         ),
         .executableTarget(
-            name: "ProxyWorkbench",
+            name: "blaze",
             dependencies: ["ProxyWorkbenchCore"],
             path: "Sources/ProxyWorkbench"
         ),

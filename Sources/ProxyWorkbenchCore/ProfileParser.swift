@@ -110,10 +110,20 @@ public enum ProfileParser {
             }
         }
 
-        for group in profile.groups {
-            for policy in group.policies where !policies.contains(policy) {
-                updated.warnings.append(ProfileWarning(line: group.sourceLine, message: "Group '\(group.name)' references unknown policy '\(policy)'."))
+        updated.groups = profile.groups.map { group in
+            var filtered = group
+            filtered.policies = group.policies.filter { policy in
+                if isSubscriptionMetadataPolicyName(policy) {
+                    updated.warnings.append(ProfileWarning(line: group.sourceLine, message: "Group '\(group.name)' ignored subscription metadata policy '\(policy)'."))
+                    return false
+                }
+                if policies.contains(policy) {
+                    return true
+                }
+                updated.warnings.append(ProfileWarning(line: group.sourceLine, message: "Group '\(group.name)' ignored unknown policy '\(policy)'."))
+                return false
             }
+            return filtered
         }
 
         updated.warnings.sort { lhs, rhs in
@@ -121,6 +131,19 @@ public enum ProfileParser {
             return lhs.line < rhs.line
         }
         return updated
+    }
+
+    private static func isSubscriptionMetadataPolicyName(_ policy: String) -> Bool {
+        let trimmed = policy.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower.contains("traffic reset")
+            || lower.contains("expire date")
+            || lower.contains("days left") {
+            return true
+        }
+
+        let usagePattern = #"^\d+(?:\.\d+)?\s*[kmgt]b?\s*\|\s*\d+(?:\.\d+)?"#
+        return trimmed.range(of: usagePattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private static func parseProxy(_ line: String, line lineNumber: Int) -> ProxyNode? {
