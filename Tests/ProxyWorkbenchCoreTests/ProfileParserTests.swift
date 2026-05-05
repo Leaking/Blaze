@@ -147,6 +147,30 @@ final class ProfileParserTests: XCTestCase {
         XCTAssertEqual(result.outbound, "Fast (HTTP, fast.example.test:8080)")
     }
 
+    func testParserDropsSubscriptionMetadataFromProxyGroups() throws {
+        let profile = ProfileParser.parse("""
+        [Proxy]
+        31.41 G | 500.00 G = trojan, proxy.example.test, 18757, password=fake-password, sni=example.com
+        Traffic Reset: 8 Days Left = trojan, proxy.example.test, 18757, password=fake-password, sni=example.com
+        Expire Date: 2026/11/15 = trojan, proxy.example.test, 18757, password=fake-password, sni=example.com
+        Hong Kong 01 = trojan, proxy.example.test, 18757, password=fake-password, sni=example.com
+        Hong Kong 02 = trojan, proxy.example.test, 18758, password=fake-password, sni=example.com
+
+        [Proxy Group]
+        Proxies = select, icon-url=https://example.test/icon.png, 31.41 G | 500.00 G, Traffic Reset: 8 Days Left, Expire Date: 2026/11/15, Hong Kong 01, Hong Kong 02
+
+        [Rule]
+        FINAL,Proxies
+        """)
+
+        XCTAssertEqual(profile.groups.first?.policies, ["Hong Kong 01", "Hong Kong 02"])
+        XCTAssertEqual(profile.groups.first?.parameters["icon-url"], "https://example.test/icon.png")
+        XCTAssertTrue(profile.warnings.contains { $0.message.contains("31.41 G | 500.00 G") })
+
+        let result = RouteProbe(profile: profile).evaluate("www.google.com")
+        XCTAssertEqual(result.policyPath, "Proxies -> Hong Kong 01")
+    }
+
     func testParserWarnsForRuleTypesNotMatchedLocally() throws {
         let profile = ProfileParser.parse("""
         [Proxy]

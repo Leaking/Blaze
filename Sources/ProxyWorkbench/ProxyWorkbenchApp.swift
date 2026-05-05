@@ -3,7 +3,7 @@ import Darwin
 import SwiftUI
 
 @main
-struct ProxyWorkbenchApp: App {
+struct BlazeApp: App {
     @StateObject private var store = WorkbenchStore()
 
     init() {
@@ -11,7 +11,7 @@ struct ProxyWorkbenchApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Aether Proxy") {
+        WindowGroup("blaze") {
             ContentView()
                 .environmentObject(store)
                 .tint(.indigo)
@@ -32,15 +32,15 @@ struct ProxyWorkbenchApp: App {
 
         MenuBarExtra {
             VStack(alignment: .leading) {
-                Text(store.localProxyRunning ? "Aether Proxy: Connected" : "Aether Proxy: Disconnected")
+                Text(store.localProxyRunning ? "blaze: Connected" : "blaze: Disconnected")
                 Text(store.activeRoutingSummary)
                 Text("HTTP \(store.proxyListenPort) / SOCKS5 \(store.socksListenPort)")
             }
 
             Divider()
 
-            Button("Open Aether Proxy") {
-                ProxyWorkbenchApp.showMainWindow()
+            Button("Open blaze") {
+                BlazeApp.showMainWindow()
             }
 
             Button("Connect") {
@@ -79,11 +79,11 @@ struct ProxyWorkbenchApp: App {
 
             Divider()
 
-            Button("Quit Aether Proxy") {
+            Button("Quit blaze") {
                 NSApplication.shared.terminate(nil)
             }
         } label: {
-            Label("Aether Proxy", systemImage: store.localProxyRunning ? "triangle.inset.filled" : "network")
+            Label("blaze", systemImage: store.localProxyRunning ? "triangle.inset.filled" : "network")
         }
     }
 

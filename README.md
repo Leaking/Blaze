@@ -1,6 +1,6 @@
-# Proxy Workbench
+# blaze
 
-Proxy Workbench is an original macOS SwiftUI app for inspecting Surge-style proxy profiles without using Surge code, trademarks, private binaries, or license bypass techniques.
+blaze is an original macOS SwiftUI app for inspecting Surge-style proxy profiles without using Surge code, trademarks, private binaries, or license bypass techniques.
 
 ## Public Feature Notes
 
@@ -30,7 +30,7 @@ Sources used:
 ## Implemented
 
 - Native macOS SwiftUI shell with sidebar navigation.
-- Aether Proxy style product shell with Overview, Proxies, Rules, Rule Sets, Profiles, Traffic, DNS, Logs, and Settings work areas.
+- blaze product shell with Overview, Proxies, Rules, Rule Sets, Profiles, Traffic, DNS, Logs, and Settings work areas.
 - Menu bar quick switch for connect/disconnect, auto-select, global policy selection, importing, and endpoint probes.
 - Dashboard-style Overview with connection/system-proxy/takeover/profile status cards, top latency cards, diagnostics, traffic summary, setup progress, and network activity visualization.
 - Editable profile source pane.
@@ -61,14 +61,14 @@ Sources used:
 - Traffic, DNS, and Logs work areas for request activity, route diagnostics, DNS-related profile settings, and local proxy event review.
 - Sanitized JSON export that redacts password, token, key, secret, certificate, and PSK-like fields.
 - Unit tests for parsing, rule matching, redaction, and local HTTP forwarding.
-- Release build script that creates and optionally installs `/Applications/ProxyWorkbench.app`.
+- Release build script that creates and optionally installs `/Applications/blaze.app`.
 
 ## Importing Your Own Profile
 
 Use one of these import paths:
 
 1. Save the Surge-style text as a `.conf` or `.surgeconfig` file.
-2. Open Proxy Workbench.
+2. Open blaze.
 3. Click `Import` in the toolbar and choose the file.
 4. Check `Overview` for parse counts and warnings.
 5. Open `Proxies` to verify nodes. Passwords and key-like values are hidden by default.
@@ -78,7 +78,7 @@ Use one of these import paths:
 7. Open `Rules` and `Tester` to inspect routing decisions.
    Click `Download Rule Sets` if you want imported `RULE-SET` entries to participate in local proxy routing.
 8. Use `Server` for the local HTTP/CONNECT and SOCKS5 listeners. They resolve the current profile's rules and selected group policies. Imported HTTP, SOCKS5, and Trojan nodes can be used as upstream forwarding policies; other encrypted/custom protocols are blocked instead of silently sent direct.
-   The `macOS Proxy Setup` section can detect network service names, check whether the selected service currently points at Proxy Workbench, apply or disable `networksetup` settings, and copy the same commands for manual review. Quick Stop leaves system proxy settings alone when they point at another local proxy service.
+   The `macOS Proxy Setup` section can detect network service names, check whether the selected service currently points at blaze, apply or disable `networksetup` settings, and copy the same commands for manual review. Quick Stop leaves system proxy settings alone when they point at another local proxy service.
 
 You can also paste the text into `Profile` and click `Parse Profile`.
 `Parse Profile` and `Save Locally` store the current profile text and settings in this app's local preferences so the next launch restores them. `Clear Saved Data` removes those saved local preferences.
@@ -111,5 +111,5 @@ Notes for pasted subscription-style configs:
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ./scripts/build-app.sh --install
-open -a ProxyWorkbench
+open -a blaze
 ```

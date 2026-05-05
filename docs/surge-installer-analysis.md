@@ -103,9 +103,9 @@ Localized NIB/string resource names expose a broad feature surface:
 - Automation/API: HTTP API, Web Dashboard, browser control, shell export commands.
 - License/update: license management, deactivation, update subscription status, Sparkle updates.
 
-## Architecture Takeaways For Proxy Workbench
+## Architecture Takeaways For blaze
 
-The current Proxy Workbench implementation covers the lowest-risk, highest-leverage profile inspection layer:
+The current blaze implementation covers the lowest-risk, highest-leverage profile inspection layer:
 
 - Profile parser for common sections.
 - Proxy and group inventory.

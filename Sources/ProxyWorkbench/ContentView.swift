@@ -10,6 +10,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
     case profiles = "Profiles"
     case traffic = "Traffic"
     case dns = "DNS"
+    case tests = "Tests"
     case logs = "Logs"
     case settings = "Settings"
 
@@ -24,6 +25,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
         case .profiles: "person.crop.rectangle.stack"
         case .traffic: "waveform.path.ecg.rectangle"
         case .dns: "globe.desk"
+        case .tests: "checklist"
         case .logs: "doc.text.magnifyingglass"
         case .settings: "gearshape"
         }
@@ -44,7 +46,7 @@ struct ContentView: View {
                     Image(systemName: "triangle.inset.filled")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.indigo)
-                    Text("Aether Proxy")
+                    Text("blaze")
                         .font(.headline)
                         .foregroundStyle(.indigo)
                 }
@@ -173,6 +175,9 @@ struct CommandPaletteView: View {
             },
             WorkbenchCommand(title: "Go to Traffic", subtitle: "\(store.proxyEvents.count) captured requests", systemImage: WorkbenchSection.traffic.icon, keywords: "traffic metrics activity") {
                 selection = .traffic
+            },
+            WorkbenchCommand(title: "Go to Tests", subtitle: "\(store.connectivityTestResults.count) connectivity results", systemImage: WorkbenchSection.tests.icon, keywords: "diagnostics connectivity google baidu socks http") {
+                selection = .tests
             }
         ]
     }
@@ -247,7 +252,7 @@ struct CommandPaletteView: View {
         }
         .frame(width: 620, height: 460)
         .confirmationDialog(
-            pendingSystemAction == .stop ? "Stop Proxy Workbench?" : "Start Proxy Workbench?",
+            pendingSystemAction == .stop ? "Stop blaze?" : "Start blaze?",
             isPresented: $showingSystemActionConfirmation
         ) {
             if pendingSystemAction == .stop {
@@ -266,7 +271,7 @@ struct CommandPaletteView: View {
             if pendingSystemAction == .stop {
                 Text("This stops local listeners and restores the saved macOS proxy settings when available.")
             } else {
-                Text("This saves the current macOS proxy settings, starts local listeners, and changes the selected network service to Proxy Workbench's local ports.")
+                Text("This saves the current macOS proxy settings, starts local listeners, and changes the selected network service to blaze's local ports.")
             }
         }
     }
@@ -321,6 +326,8 @@ struct DetailView: View {
                     TrafficView()
                 case .dns:
                     DNSView()
+                case .tests:
+                    TestsView()
                 case .logs:
                     LogsView()
                 case .settings:
@@ -389,7 +396,7 @@ struct OverviewView: View {
                 }
                 OverviewStatusCard(
                     title: "System Proxy",
-                    value: store.systemProxyStatus.activation == .active ? "ProxyWorkbench" : store.systemProxyStatus.activation.rawValue,
+                    value: store.systemProxyStatus.activation == .active ? "blaze" : store.systemProxyStatus.activation.rawValue,
                     caption: store.systemProxyStatus.summary,
                     systemImage: "shield.lefthalf.filled",
                     color: systemProxyColor
@@ -424,7 +431,7 @@ struct OverviewView: View {
             SetupProgressStrip()
         }
         .pagePadding()
-        .confirmationDialog("Start Proxy Workbench?", isPresented: $showingStartConfirmation) {
+        .confirmationDialog("Start blaze?", isPresented: $showingStartConfirmation) {
             Button("Start Proxy") {
                 Task { await store.startAndApplySystemProxy() }
             }
@@ -432,13 +439,13 @@ struct OverviewView: View {
         } message: {
             Text("This saves the current system proxy as a restore point, starts local listeners, and changes the selected macOS network service to use 127.0.0.1:\(store.proxyListenPort) for HTTP/HTTPS and 127.0.0.1:\(store.socksListenPort) for SOCKS5.")
         }
-        .confirmationDialog("Stop Proxy Workbench?", isPresented: $showingStopConfirmation) {
+        .confirmationDialog("Stop blaze?", isPresented: $showingStopConfirmation) {
             Button("Stop Proxy", role: .destructive) {
                 Task { await store.disableSystemProxyAndStop() }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to Proxy Workbench's local ports.")
+            Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to blaze's local ports.")
         }
     }
 
@@ -627,7 +634,7 @@ struct QuickDiagnosticsPanel: View {
                     store.runRuleProbe()
                     Task {
                         await store.refreshSystemProxyStatus()
-                        await store.runLatencyChecks()
+                        await store.runConnectivityDiagnostics()
                     }
                 } label: {
                     Label("Run Full Test", systemImage: "arrow.triangle.2.circlepath")
@@ -2583,6 +2590,136 @@ struct DNSView: View {
     }
 }
 
+struct TestsView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    private var failureCount: Int {
+        store.connectivityTestResults.filter { $0.status == .failed }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                Header(title: "Tests", subtitle: testsSubtitle)
+                Spacer()
+                Button {
+                    Task { await store.refreshSystemProxyStatus() }
+                } label: {
+                    Label("Refresh Status", systemImage: "arrow.clockwise")
+                }
+                .disabled(store.systemProxyStatusInProgress || store.connectivityTestRunning)
+
+                Button {
+                    Task { await store.runConnectivityDiagnostics() }
+                } label: {
+                    Label(store.connectivityTestRunning ? "Running" : "Run Tests", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.connectivityTestRunning)
+            }
+
+            SectionPanel(title: "Current State", icon: "switch.2") {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    CompactStat(title: "System Proxy", value: store.systemProxyStatus.summary, icon: "desktopcomputer")
+                    CompactStat(title: "Local Proxy", value: store.localProxySummary, icon: "point.3.connected.trianglepath.dotted")
+                    CompactStat(title: "HTTP", value: "127.0.0.1:\(store.proxyListenPort)", icon: "network")
+                    CompactStat(title: "SOCKS5", value: "127.0.0.1:\(store.socksListenPort)", icon: "point.3.connected.trianglepath.dotted")
+                }
+            }
+
+            SectionPanel(title: "Connectivity Results", icon: "checklist") {
+                if store.connectivityTestResults.isEmpty {
+                    Text("No test results")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                } else {
+                    LazyVStack(spacing: 8) {
+                        ForEach(store.connectivityTestResults) { result in
+                            ConnectivityResultRow(result: result)
+                        }
+                    }
+                }
+            }
+        }
+        .pagePadding()
+    }
+
+    private var testsSubtitle: String {
+        if store.connectivityTestRunning {
+            return "Running Google, Baidu, DNS, and local listener checks"
+        }
+        if store.connectivityTestResults.isEmpty {
+            return "Google, Baidu, DNS, HTTP, and SOCKS5 checks"
+        }
+        return failureCount == 0 ? "All recent checks passed" : "\(failureCount) recent check\(failureCount == 1 ? "" : "s") failed"
+    }
+}
+
+struct ConnectivityResultRow: View {
+    let result: ConnectivityTestResult
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(result.date, style: .time)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(result.name)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(result.transport)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                }
+                Text(result.target)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 220, alignment: .leading)
+
+            Text(result.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(result.durationText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 74, alignment: .trailing)
+
+            Text(result.status.rawValue)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.12), in: Capsule())
+                .foregroundStyle(statusColor)
+                .frame(width: 76)
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusColor: Color {
+        switch result.status {
+        case .passed:
+            return .green
+        case .failed:
+            return .red
+        case .info:
+            return .secondary
+        }
+    }
+}
+
 struct LogsView: View {
     @EnvironmentObject private var store: WorkbenchStore
 
@@ -2756,7 +2893,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This changes the selected network service to use Proxy Workbench's local HTTP, HTTPS, and SOCKS5 ports.")
+            Text("This changes the selected network service to use blaze's local HTTP, HTTPS, and SOCKS5 ports.")
         }
         .confirmationDialog("Disable macOS proxy settings?", isPresented: $showingDisableConfirmation) {
             Button("Disable", role: .destructive) {
@@ -3107,7 +3244,7 @@ struct ServerView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This saves the current system proxy as a restore point, then changes the selected macOS network service to use Proxy Workbench's local HTTP/HTTPS and SOCKS5 ports.")
+            Text("This saves the current system proxy as a restore point, then changes the selected macOS network service to use blaze's local HTTP/HTTPS and SOCKS5 ports.")
         }
         .confirmationDialog("Disable macOS proxy settings?", isPresented: $showingDisableConfirmation) {
             Button("Disable", role: .destructive) {

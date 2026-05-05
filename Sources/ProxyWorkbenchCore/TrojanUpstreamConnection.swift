@@ -7,10 +7,16 @@ import Security
 final class TrojanUpstreamConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let queue: DispatchQueue
+    private let sendQueue: DispatchQueue
+    private let requestHeader: Data
+    private let headerLock = NSLock()
+    private var didSendRequestHeader = false
 
-    private init(connection: NWConnection, queue: DispatchQueue) {
+    private init(connection: NWConnection, queue: DispatchQueue, requestHeader: Data) {
         self.connection = connection
         self.queue = queue
+        self.sendQueue = DispatchQueue(label: "blaze.TrojanSend.\(UUID().uuidString)")
+        self.requestHeader = requestHeader
     }
 
     static func connect(upstream: ProxyNode, destinationHost: String, destinationPort: Int) async throws -> TrojanUpstreamConnection {
@@ -32,36 +38,81 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
             ?? upstream.parameters["server-name"]?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? upstream.host
         sec_protocol_options_set_tls_server_name(tlsOptions.securityProtocolOptions, serverName)
+        for protocolName in upstream.tlsApplicationProtocols {
+            sec_protocol_options_add_tls_application_protocol(tlsOptions.securityProtocolOptions, protocolName)
+        }
 
         if upstream.parameters["skip-cert-verify"].isTruthy || upstream.parameters["allow-insecure"].isTruthy {
             sec_protocol_options_set_verify_block(tlsOptions.securityProtocolOptions, { _, _, complete in
                 complete(true)
-            }, DispatchQueue(label: "ProxyWorkbench.TrojanTLSVerify.\(UUID().uuidString)"))
+            }, DispatchQueue(label: "blaze.TrojanTLSVerify.\(UUID().uuidString)"))
         }
 
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.enableKeepalive = true
+        tcpOptions.noDelay = true
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         parameters.preferNoProxies = true
-        let queue = DispatchQueue(label: "ProxyWorkbench.Trojan.\(UUID().uuidString)")
+        let queue = DispatchQueue(label: "blaze.Trojan.\(UUID().uuidString)")
         let connection = NWConnection(host: NWEndpoint.Host(upstream.host), port: port, using: parameters)
-        let upstreamConnection = TrojanUpstreamConnection(connection: connection, queue: queue)
+        let requestHeader = try TrojanProtocol.requestHeader(password: password, host: destinationHost, port: destinationPort)
+        let upstreamConnection = TrojanUpstreamConnection(connection: connection, queue: queue, requestHeader: requestHeader)
 
         try await upstreamConnection.start(timeout: .seconds(12))
-        try await upstreamConnection.send(TrojanProtocol.requestHeader(password: password, host: destinationHost, port: destinationPort))
+        upstreamConnection.scheduleDeferredHeaderFlush()
         return upstreamConnection
     }
 
     func send(_ data: Data) async throws {
         guard !data.isEmpty else { return }
+        try await enqueueWrite(payload: data)
+    }
+
+    func flushHeaderIfNeeded() async throws {
+        try await enqueueWrite(payload: nil)
+    }
+
+    private func scheduleDeferredHeaderFlush() {
+        Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await self?.flushHeaderIfNeeded()
+        }
+    }
+
+    private func enqueueWrite(payload: Data?) async throws {
+        let payload = payload ?? Data()
+        let outboundData: Data? = headerLock.withLock { () -> Data? in
+            let header: Data?
+            if didSendRequestHeader {
+                header = nil
+            } else {
+                didSendRequestHeader = true
+                header = requestHeader
+            }
+
+            guard header != nil || !payload.isEmpty else { return nil }
+
+            var data = Data()
+            data.reserveCapacity((header?.count ?? 0) + payload.count)
+            if let header {
+                data.append(header)
+            }
+            data.append(payload)
+            return data
+        }
+
+        guard let outboundData else { return }
+
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: ProxyServerError.trojan(error.localizedDescription))
-                } else {
-                    continuation.resume()
-                }
-            })
+            sendQueue.async { [connection, outboundData] in
+                connection.send(content: outboundData, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: ProxyServerError.trojan(error.localizedDescription))
+                    } else {
+                        continuation.resume()
+                    }
+                })
+            }
         }
     }
 
@@ -127,7 +178,8 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
 
         guard state.wait(timeout: timeout) else {
             connection.cancel()
-            throw ProxyServerError.trojan("TLS connection timed out")
+            let diagnostic = UpstreamDNSDiagnostic.fakeIPMessage(for: connection.endpointHost)
+            throw ProxyServerError.trojan(["TLS connection timed out", diagnostic].compactMap(\.self).joined(separator: "; "))
         }
         try state.result.get()
     }
@@ -270,6 +322,73 @@ private extension Optional where Wrapped == String {
         default:
             return false
         }
+    }
+}
+
+private extension ProxyNode {
+    var tlsApplicationProtocols: [String] {
+        let rawValue = parameters["alpn"] ?? parameters["tls-alpn"]
+        let parsed = rawValue?
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+        return parsed.isEmpty ? ["h2", "http/1.1"] : parsed
+    }
+}
+
+private extension NWConnection {
+    var endpointHost: String {
+        switch endpoint {
+        case .hostPort(let host, _):
+            return "\(host)"
+        default:
+            return ""
+        }
+    }
+}
+
+private enum UpstreamDNSDiagnostic {
+    static func fakeIPMessage(for host: String) -> String? {
+        guard !host.isEmpty, let addresses = resolvedIPv4Addresses(for: host), !addresses.isEmpty else {
+            return nil
+        }
+        guard addresses.allSatisfy(isFakeIP) else {
+            return nil
+        }
+        return "local DNS resolved upstream to 198.18.0.0/15 fake-IP; another proxy Network Extension may still be active"
+    }
+
+    private static func resolvedIPv4Addresses(for host: String) -> [UInt32]? {
+        var hints = addrinfo(
+            ai_flags: AI_NUMERICSERV,
+            ai_family: AF_INET,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var info: UnsafeMutablePointer<addrinfo>?
+        let lookup = getaddrinfo(host, "443", &hints, &info)
+        guard lookup == 0, let first = info else {
+            return nil
+        }
+        defer { freeaddrinfo(first) }
+
+        var result: [UInt32] = []
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        while let address = current {
+            if let socketAddress = address.pointee.ai_addr?.withMemoryRebound(to: sockaddr_in.self, capacity: 1, { $0.pointee }) {
+                result.append(UInt32(bigEndian: socketAddress.sin_addr.s_addr))
+            }
+            current = address.pointee.ai_next
+        }
+        return result
+    }
+
+    private static func isFakeIP(_ address: UInt32) -> Bool {
+        (address & 0xFFFE_0000) == 0xC612_0000
     }
 }
 

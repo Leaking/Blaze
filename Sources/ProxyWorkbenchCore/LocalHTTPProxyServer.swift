@@ -138,7 +138,7 @@ public actor ProxyEventStore {
             return nil
         }
         return supportDirectory
-            .appendingPathComponent("ProxyWorkbench", isDirectory: true)
+            .appendingPathComponent("blaze", isDirectory: true)
             .appendingPathComponent("proxy-events.log", isDirectory: false)
     }
 
@@ -348,7 +348,7 @@ public actor LocalHTTPProxyServer {
                 )
 
                 if request.method.uppercased() == "CONNECT" {
-                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: ProxyWorkbench\r\n\r\n", to: clientFD)
+                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: blaze\r\n\r\n", to: clientFD)
                 } else if let initialPayload {
                     try sendAll(initialPayload, to: remoteFD)
                 }
@@ -407,7 +407,7 @@ public actor LocalHTTPProxyServer {
                 )
 
                 if request.method.uppercased() == "CONNECT" {
-                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: ProxyWorkbench\r\n\r\n", to: clientFD)
+                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: blaze\r\n\r\n", to: clientFD)
                 } else if let initialPayload {
                     try sendAll(initialPayload, to: remoteFD)
                 }
@@ -433,7 +433,7 @@ public actor LocalHTTPProxyServer {
                 )
 
                 if request.method.uppercased() == "CONNECT" {
-                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: ProxyWorkbench\r\n\r\n", to: clientFD)
+                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: blaze\r\n\r\n", to: clientFD)
                 } else if let initialPayload {
                     try await connection.send(initialPayload)
                 }

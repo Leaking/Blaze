@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ProxyWorkbenchCore
 
@@ -23,6 +24,27 @@ enum ProxyRoutingMode: String, CaseIterable, Identifiable {
         case .global: "All requests are routed through the selected global outbound."
         case .ruleBased: "Using rule system to determine how to process requests."
         }
+    }
+}
+
+enum ConnectivityTestStatus: String, Hashable, Sendable {
+    case passed = "Passed"
+    case failed = "Failed"
+    case info = "Info"
+}
+
+struct ConnectivityTestResult: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    var date = Date()
+    var name: String
+    var transport: String
+    var target: String
+    var status: ConnectivityTestStatus
+    var detail: String
+    var durationMilliseconds: Int?
+
+    var durationText: String {
+        durationMilliseconds.map { "\($0) ms" } ?? "-"
     }
 }
 
@@ -62,6 +84,8 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var proxyPolicyStats: [ProxyPolicyHitStat] = []
     @Published private(set) var proxyRuleStats: [ProxyRuleHitStat] = []
     @Published private(set) var favoriteProxyNames: Set<String> = []
+    @Published private(set) var connectivityTestRunning = false
+    @Published private(set) var connectivityTestResults: [ConnectivityTestResult] = []
 
     private let probe = LatencyProbe()
     private var proxyLogStore = ProxyEventStore(diskLogURL: ProxyEventStore.defaultDiskLogURL())
@@ -806,6 +830,84 @@ final class WorkbenchStore: ObservableObject {
         statusText = "\(proxy.name): \(result.milliseconds.map { "\($0) ms" } ?? result.status)"
     }
 
+    func runConnectivityDiagnostics() async {
+        guard !connectivityTestRunning else { return }
+        connectivityTestRunning = true
+        connectivityTestResults = []
+        statusText = "Running connectivity diagnostics..."
+        defer {
+            connectivityTestRunning = false
+        }
+
+        await refreshSystemProxyStatus(updateStatusText: false)
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "System Proxy",
+                transport: "macOS",
+                target: networkServiceName,
+                status: systemProxyStatus.activation == .active ? .passed : .failed,
+                detail: systemProxyStatus.summary,
+                durationMilliseconds: nil
+            )
+        )
+
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "HTTP Listener",
+                transport: "Local",
+                target: "127.0.0.1:\(proxyListenPort)",
+                status: proxyServerRunning ? .passed : .failed,
+                detail: proxyServerRunning ? "HTTP listener is running" : "HTTP listener is stopped",
+                durationMilliseconds: nil
+            )
+        )
+
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "SOCKS5 Listener",
+                transport: "Local",
+                target: "127.0.0.1:\(socksListenPort)",
+                status: socksServerRunning ? .passed : .failed,
+                detail: socksServerRunning ? "SOCKS5 listener is running" : "SOCKS5 listener is stopped",
+                durationMilliseconds: nil
+            )
+        )
+
+        if let proxy = diagnosticProxy(for: "www.google.com") {
+            let dnsResult = ConnectivityDNSProbe.evaluate(host: proxy.host, proxyName: proxy.name)
+            await appendConnectivityResult(dnsResult)
+        } else {
+            await appendConnectivityResult(
+                ConnectivityTestResult(
+                    name: "Upstream DNS",
+                    transport: "DNS",
+                    target: "www.google.com",
+                    status: .info,
+                    detail: "No active proxy node resolved for Google route",
+                    durationMilliseconds: nil
+                )
+            )
+        }
+
+        for target in ConnectivityTarget.defaultTargets {
+            let httpResult = await ConnectivitySocketProbe.httpConnect(
+                target: target,
+                proxyPort: proxyListenPort
+            )
+            await appendConnectivityResult(httpResult)
+
+            let socksResult = await ConnectivitySocketProbe.socks5Connect(
+                target: target,
+                proxyPort: socksListenPort
+            )
+            await appendConnectivityResult(socksResult)
+        }
+
+        let failures = connectivityTestResults.filter { $0.status == .failed }.count
+        statusText = failures == 0 ? "Connectivity diagnostics passed" : "Connectivity diagnostics found \(failures) issue\(failures == 1 ? "" : "s")"
+        await refreshProxyEvents()
+    }
+
     func startLocalProxyServer() async {
         guard !proxyServerRunning else { return }
         saveLocalState()
@@ -878,6 +980,11 @@ final class WorkbenchStore: ObservableObject {
         statusText = "Proxy request log cleared"
     }
 
+    private func appendConnectivityResult(_ result: ConnectivityTestResult) async {
+        connectivityTestResults.append(result)
+        await proxyLogStore.append(result.proxyEvent)
+    }
+
     private func startProxyEventRefresh() {
         proxyRefreshTask?.cancel()
         let logStore = proxyLogStore
@@ -942,6 +1049,16 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    private func diagnosticProxy(for input: String) -> ProxyNode? {
+        let result = RouteProbe(profile: activeRoutingProfile(), groupSelections: selectedPolicies).evaluate(input)
+        for policy in result.policyPath.components(separatedBy: " -> ").reversed() {
+            if let proxy = profile.proxies.first(where: { $0.name == policy }) {
+                return proxy
+            }
+        }
+        return nil
+    }
+
     private func restoreSavedSystemProxyRestorePoint() {
         guard let data = defaults.data(forKey: PersistenceKey.systemProxyRestorePoint) else {
             systemProxyRestorePoint = nil
@@ -975,6 +1092,311 @@ private enum PersistenceKey {
     static let favoriteProxyNames = "proxies.favoriteNames"
 
     static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy, favoriteProxyNames]
+}
+
+private struct ConnectivityTarget: Sendable {
+    var name: String
+    var url: URL
+    var expectedStatus: ClosedRange<Int>
+
+    static let defaultTargets: [ConnectivityTarget] = [
+        ConnectivityTarget(name: "Google", url: URL(string: "https://www.google.com/generate_204")!, expectedStatus: 204...204),
+        ConnectivityTarget(name: "Baidu", url: URL(string: "https://www.baidu.com/")!, expectedStatus: 200...399)
+    ]
+}
+
+private enum ConnectivitySocketProbe {
+    static func httpConnect(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
+        await Task.detached(priority: .utility) {
+            let start = Date()
+            let host = target.url.host ?? target.url.absoluteString
+            do {
+                let fd = try openLocalSocket(port: proxyPort, timeoutSeconds: 18)
+                defer { close(fd) }
+                let request = """
+                CONNECT \(host):443 HTTP/1.1\r
+                Host: \(host):443\r
+                Proxy-Connection: close\r
+                User-Agent: blaze-connectivity-test\r
+                \r
+                
+                """
+                try sendAll(Data(request.utf8), to: fd)
+                let header = try readUntilHeaderTerminator(from: fd, timeoutSeconds: 18)
+                let statusLine = String(decoding: header, as: UTF8.self).components(separatedBy: "\r\n").first ?? ""
+                let code = statusCode(from: statusLine)
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "HTTP",
+                    target: host,
+                    status: code == 200 ? .passed : .failed,
+                    detail: code.map { "HTTP proxy returned \($0)" } ?? "Invalid HTTP proxy response",
+                    durationMilliseconds: elapsed
+                )
+            } catch {
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "HTTP",
+                    target: host,
+                    status: .failed,
+                    detail: errorDescription(error),
+                    durationMilliseconds: elapsed
+                )
+            }
+        }.value
+    }
+
+    static func socks5Connect(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
+        await Task.detached(priority: .utility) {
+            let start = Date()
+            let host = target.url.host ?? target.url.absoluteString
+            do {
+                let fd = try openLocalSocket(port: proxyPort, timeoutSeconds: 18)
+                defer { close(fd) }
+
+                try sendAll(Data([0x05, 0x01, 0x00]), to: fd)
+                let greeting = try readExact(2, from: fd)
+                guard greeting == [0x05, 0x00] else {
+                    throw ConnectivitySocketError.protocolFailure("SOCKS5 auth response \(hex(greeting))")
+                }
+
+                let hostBytes = Array(host.utf8)
+                guard hostBytes.count <= 255 else {
+                    throw ConnectivitySocketError.protocolFailure("Target host is too long")
+                }
+                var request = Data([0x05, 0x01, 0x00, 0x03, UInt8(hostBytes.count)])
+                request.append(contentsOf: hostBytes)
+                request.append(contentsOf: [0x01, 0xBB])
+                try sendAll(request, to: fd)
+
+                let response = try readExact(4, from: fd)
+                let replyCode = response[1]
+                try consumeSOCKSAddress(atyp: response[3], from: fd)
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "SOCKS5",
+                    target: host,
+                    status: replyCode == 0x00 ? .passed : .failed,
+                    detail: replyCode == 0x00 ? "SOCKS5 CONNECT accepted" : "SOCKS5 reply code 0x\(String(format: "%02X", replyCode))",
+                    durationMilliseconds: elapsed
+                )
+            } catch {
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "SOCKS5",
+                    target: host,
+                    status: .failed,
+                    detail: errorDescription(error),
+                    durationMilliseconds: elapsed
+                )
+            }
+        }.value
+    }
+
+    private static func openLocalSocket(port: Int, timeoutSeconds: Int) throws -> Int32 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw ConnectivitySocketError.posix("socket", errno)
+        }
+
+        do {
+            try configureTimeout(fd: fd, seconds: timeoutSeconds)
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = UInt16(port).bigEndian
+            address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+            let result = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                    connect(fd, socketAddress, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard result == 0 else {
+                throw ConnectivitySocketError.posix("connect", errno)
+            }
+            return fd
+        } catch {
+            close(fd)
+            throw error
+        }
+    }
+
+    private static func configureTimeout(fd: Int32, seconds: Int) throws {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            throw ConnectivitySocketError.posix("setsockopt SO_RCVTIMEO", errno)
+        }
+        guard setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            throw ConnectivitySocketError.posix("setsockopt SO_SNDTIMEO", errno)
+        }
+    }
+
+    private static func sendAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+            var sent = 0
+            while sent < data.count {
+                let count = Darwin.send(fd, baseAddress.advanced(by: sent), data.count - sent, 0)
+                guard count > 0 else {
+                    throw ConnectivitySocketError.posix("send", errno)
+                }
+                sent += count
+            }
+        }
+    }
+
+    private static func readExact(_ count: Int, from fd: Int32) throws -> [UInt8] {
+        var result: [UInt8] = []
+        result.reserveCapacity(count)
+        var buffer = [UInt8](repeating: 0, count: count)
+        while result.count < count {
+            let readCount = recv(fd, &buffer, count - result.count, 0)
+            guard readCount > 0 else {
+                throw ConnectivitySocketError.posix(readCount == 0 ? "recv EOF" : "recv", readCount == 0 ? ECONNRESET : errno)
+            }
+            result.append(contentsOf: buffer.prefix(readCount))
+        }
+        return result
+    }
+
+    private static func readUntilHeaderTerminator(from fd: Int32, timeoutSeconds _: Int) throws -> Data {
+        var data = Data()
+        let terminator = Data([13, 10, 13, 10])
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while data.count < 64 * 1024 {
+            let count = recv(fd, &buffer, buffer.count, 0)
+            guard count > 0 else {
+                throw ConnectivitySocketError.posix(count == 0 ? "recv EOF" : "recv", count == 0 ? ECONNRESET : errno)
+            }
+            data.append(contentsOf: buffer.prefix(count))
+            if data.range(of: terminator) != nil {
+                return data
+            }
+        }
+        throw ConnectivitySocketError.protocolFailure("HTTP response headers exceeded 64 KiB")
+    }
+
+    private static func consumeSOCKSAddress(atyp: UInt8, from fd: Int32) throws {
+        switch atyp {
+        case 0x01:
+            _ = try readExact(4 + 2, from: fd)
+        case 0x03:
+            let length = try readExact(1, from: fd)[0]
+            _ = try readExact(Int(length) + 2, from: fd)
+        case 0x04:
+            _ = try readExact(16 + 2, from: fd)
+        default:
+            throw ConnectivitySocketError.protocolFailure("Unknown SOCKS5 address type 0x\(String(format: "%02X", atyp))")
+        }
+    }
+
+    private static func statusCode(from statusLine: String) -> Int? {
+        let parts = statusLine.split(separator: " ")
+        guard parts.count >= 2 else { return nil }
+        return Int(parts[1])
+    }
+
+    private static func errorDescription(_ error: Error) -> String {
+        if let socketError = error as? ConnectivitySocketError {
+            return socketError.description
+        }
+        return String(describing: error)
+    }
+
+    private static func hex(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+}
+
+private enum ConnectivitySocketError: Error, CustomStringConvertible {
+    case posix(String, Int32)
+    case protocolFailure(String)
+
+    var description: String {
+        switch self {
+        case .posix(let operation, let code):
+            "\(operation) failed: \(String(cString: strerror(code)))"
+        case .protocolFailure(let message):
+            message
+        }
+    }
+}
+
+private enum ConnectivityDNSProbe {
+    static func evaluate(host: String, proxyName: String) -> ConnectivityTestResult {
+        let addresses = resolvedIPv4Addresses(for: host)
+        guard !addresses.isEmpty else {
+            return ConnectivityTestResult(
+                name: "Upstream DNS",
+                transport: "DNS",
+                target: proxyName,
+                status: .failed,
+                detail: "No IPv4 address resolved for active upstream",
+                durationMilliseconds: nil
+            )
+        }
+
+        let isFakeIP = addresses.allSatisfy { ($0 & 0xFFFE_0000) == 0xC612_0000 }
+        return ConnectivityTestResult(
+            name: "Upstream DNS",
+            transport: "DNS",
+            target: proxyName,
+            status: isFakeIP ? .failed : .passed,
+            detail: isFakeIP ? "Active upstream resolves to 198.18.0.0/15 fake-ip" : "Active upstream resolves outside fake-ip range",
+            durationMilliseconds: nil
+        )
+    }
+
+    private static func resolvedIPv4Addresses(for host: String) -> [UInt32] {
+        var hints = addrinfo(
+            ai_flags: AI_NUMERICSERV,
+            ai_family: AF_INET,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var info: UnsafeMutablePointer<addrinfo>?
+        let lookup = getaddrinfo(host, "443", &hints, &info)
+        guard lookup == 0, let first = info else {
+            return []
+        }
+        defer { freeaddrinfo(first) }
+
+        var result: [UInt32] = []
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        while let address = current {
+            if let socketAddress = address.pointee.ai_addr?.withMemoryRebound(to: sockaddr_in.self, capacity: 1, { $0.pointee }) {
+                result.append(UInt32(bigEndian: socketAddress.sin_addr.s_addr))
+            }
+            current = address.pointee.ai_next
+        }
+        return result
+    }
+}
+
+private extension ConnectivityTestResult {
+    var proxyEvent: ProxyServerEvent {
+        let parsedURL = URL(string: target.contains("://") ? target : "https://\(target)")
+        return ProxyServerEvent(
+            date: date,
+            method: "DIAG",
+            target: target,
+            host: parsedURL?.host ?? target,
+            port: parsedURL?.port ?? 443,
+            policy: transport,
+            status: status.rawValue,
+            rule: "Connectivity",
+            note: "\(name): \(detail); duration=\(durationText)"
+        )
+    }
 }
 
 private enum NetworkServiceDetectionError: Error, CustomStringConvertible {

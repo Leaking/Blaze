@@ -1,4 +1,4 @@
-# Proxy Workbench Product Design Notes
+# blaze Product Design Notes
 
 ## Product Scope
 
