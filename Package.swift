@@ -35,6 +35,11 @@ let package = Package(
             name: "ProxyWorkbenchCoreTests",
             dependencies: ["ProxyWorkbenchCore"],
             path: "Tests/ProxyWorkbenchCoreTests"
+        ),
+        .testTarget(
+            name: "BlazeTunnelExtensionTests",
+            dependencies: ["BlazeTunnelExtension"],
+            path: "Tests/BlazeTunnelExtensionTests"
         )
     ]
 )

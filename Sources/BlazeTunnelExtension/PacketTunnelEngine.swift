@@ -275,7 +275,8 @@ private final class TCPForwarder: @unchecked Sendable {
     private var connecting = false
     private var clientNextSequence: UInt32 = 0
     private var serverSequence: UInt32 = UInt32.random(in: 1...UInt32.max)
-    private var clientWindow: UInt16 = 65_535
+    private var inboundReassembler = TCPInboundReassembler(maxBufferedBytes: 512 * 1024)
+    private var pendingFINSequence: UInt32?
     private var pendingPayloads: [Data] = []
 
     init(
@@ -307,7 +308,6 @@ private final class TCPForwarder: @unchecked Sendable {
 
     private func handleLocked(_ packet: TCPPacket) {
         guard state != .closed else { return }
-        clientWindow = packet.window
 
         if packet.flags.contains(.reset) {
             closeLocked(notify: true)
@@ -321,26 +321,36 @@ private final class TCPForwarder: @unchecked Sendable {
 
         guard state != .new else { return }
 
+        var shouldAcknowledgePayload = false
         if !packet.payload.isEmpty {
-            let expectedEnd = packet.sequenceNumber &+ UInt32(packet.payload.count)
-            if packet.sequenceNumber == clientNextSequence {
-                clientNextSequence = expectedEnd
-                sendACKLocked()
-                writeOrBufferLocked(packet.payload)
-            } else if packet.sequenceNumber &+ UInt32(packet.payload.count) <= clientNextSequence {
-                sendACKLocked()
-            } else {
-                sendACKLocked()
+            switch inboundReassembler.insert(
+                sequenceNumber: packet.sequenceNumber,
+                payload: packet.payload,
+                nextSequence: &clientNextSequence
+            ) {
+            case .accepted(let payloads):
+                shouldAcknowledgePayload = true
+                for payload in payloads {
+                    writeOrBufferLocked(payload)
+                }
+            case .overflow:
+                sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
+                closeLocked(notify: true)
+                return
             }
         }
 
+        let consumedPendingFIN = consumePendingFINIfReadyLocked()
+
         if packet.flags.contains(.fin) {
-            clientNextSequence = clientNextSequence &+ 1
+            handleFINLocked(sequenceNumber: packet.sequenceNumber, payloadLength: packet.payload.count)
+            shouldAcknowledgePayload = false
+        } else if consumedPendingFIN {
+            shouldAcknowledgePayload = false
+        }
+
+        if shouldAcknowledgePayload {
             sendACKLocked()
-            if socketFD >= 0 {
-                shutdown(socketFD, SHUT_WR)
-            }
-            state = .closing
         }
     }
 
@@ -399,7 +409,43 @@ private final class TCPForwarder: @unchecked Sendable {
         for payload in buffered {
             guard writeSocketLocked(payload) else { return }
         }
+        if state == .closing {
+            shutdown(fd, SHUT_WR)
+        }
         startReadLoop(fd: fd)
+    }
+
+    private func handleFINLocked(sequenceNumber: UInt32, payloadLength: Int) {
+        let finSequence = sequenceNumber &+ UInt32(payloadLength)
+        if finSequence == clientNextSequence {
+            acceptFINLocked()
+        } else if tcpSequenceLessThan(finSequence, clientNextSequence) {
+            sendACKLocked()
+        } else {
+            pendingFINSequence = finSequence
+            sendACKLocked()
+        }
+    }
+
+    @discardableResult
+    private func consumePendingFINIfReadyLocked() -> Bool {
+        guard let pendingFINSequence, pendingFINSequence == clientNextSequence else {
+            return false
+        }
+        acceptFINLocked()
+        return true
+    }
+
+    private func acceptFINLocked() {
+        pendingFINSequence = nil
+        clientNextSequence = clientNextSequence &+ 1
+        sendACKLocked()
+        if socketFD >= 0 {
+            shutdown(socketFD, SHUT_WR)
+        }
+        if state != .closed {
+            state = .closing
+        }
     }
 
     private func writeOrBufferLocked(_ payload: Data) {
@@ -485,7 +531,7 @@ private final class TCPForwarder: @unchecked Sendable {
             sequenceNumber: serverSequence,
             acknowledgmentNumber: clientNextSequence,
             flags: flags,
-            window: clientWindow == 0 ? 65_535 : clientWindow,
+            window: advertisedReceiveWindowLocked(),
             payload: payload
         )
         packetWriter(packet)
@@ -501,6 +547,10 @@ private final class TCPForwarder: @unchecked Sendable {
         serverSequence = serverSequence &+ increment
     }
 
+    private func advertisedReceiveWindowLocked() -> UInt16 {
+        UInt16(min(65_535, inboundReassembler.availableByteCount))
+    }
+
     private func closeLocked(notify: Bool) {
         guard state != .closed else { return }
         state = .closed
@@ -513,6 +563,138 @@ private final class TCPForwarder: @unchecked Sendable {
             onClose(key)
         }
     }
+}
+
+struct TCPInboundReassembler {
+    enum InsertResult {
+        case accepted([Data])
+        case overflow
+    }
+
+    private struct BufferedSegment {
+        var sequenceNumber: UInt32
+        var payload: Data
+
+        var endSequence: UInt32 {
+            sequenceNumber &+ UInt32(payload.count)
+        }
+    }
+
+    private let maxBufferedBytes: Int
+    private var segments: [BufferedSegment] = []
+    private var bufferedBytes = 0
+
+    init(maxBufferedBytes: Int) {
+        self.maxBufferedBytes = max(0, maxBufferedBytes)
+    }
+
+    var availableByteCount: Int {
+        max(0, maxBufferedBytes - bufferedBytes)
+    }
+
+    mutating func insert(sequenceNumber: UInt32, payload: Data, nextSequence: inout UInt32) -> InsertResult {
+        guard !payload.isEmpty else {
+            return .accepted([])
+        }
+
+        let endSequence = sequenceNumber &+ UInt32(payload.count)
+        guard !tcpSequenceLessThanOrEqual(endSequence, nextSequence) else {
+            return .accepted([])
+        }
+
+        var normalizedSequence = sequenceNumber
+        var normalizedPayload = payload
+        if tcpSequenceLessThan(normalizedSequence, nextSequence) {
+            let trimCount = Int(nextSequence &- normalizedSequence)
+            guard trimCount < normalizedPayload.count else {
+                return .accepted([])
+            }
+            normalizedPayload.removeFirst(trimCount)
+            normalizedSequence = nextSequence
+        }
+
+        segments.append(BufferedSegment(sequenceNumber: normalizedSequence, payload: normalizedPayload))
+        coalesceSegments()
+        let drained = drainContiguousSegments(nextSequence: &nextSequence)
+
+        guard bufferedBytes <= maxBufferedBytes else {
+            return .overflow
+        }
+
+        return .accepted(drained)
+    }
+
+    private mutating func coalesceSegments() {
+        segments.sort { lhs, rhs in
+            tcpSequenceLessThan(lhs.sequenceNumber, rhs.sequenceNumber)
+        }
+
+        var merged: [BufferedSegment] = []
+        merged.reserveCapacity(segments.count)
+
+        for segment in segments {
+            guard !segment.payload.isEmpty else { continue }
+            guard var last = merged.popLast() else {
+                merged.append(segment)
+                continue
+            }
+
+            let lastEnd = last.endSequence
+            if tcpSequenceLessThan(segment.sequenceNumber, lastEnd) || segment.sequenceNumber == lastEnd {
+                if tcpSequenceLessThan(lastEnd, segment.endSequence) {
+                    let suffixOffset = Int(lastEnd &- segment.sequenceNumber)
+                    last.payload.append(contentsOf: segment.payload.dropFirst(suffixOffset))
+                }
+                merged.append(last)
+            } else {
+                merged.append(last)
+                merged.append(segment)
+            }
+        }
+
+        segments = merged
+        bufferedBytes = segments.reduce(0) { $0 + $1.payload.count }
+    }
+
+    private mutating func drainContiguousSegments(nextSequence: inout UInt32) -> [Data] {
+        var drained: [Data] = []
+
+        while let first = segments.first {
+            if first.sequenceNumber == nextSequence {
+                drained.append(first.payload)
+                nextSequence = nextSequence &+ UInt32(first.payload.count)
+                segments.removeFirst()
+                continue
+            }
+
+            if tcpSequenceLessThan(first.sequenceNumber, nextSequence) {
+                if tcpSequenceLessThanOrEqual(first.endSequence, nextSequence) {
+                    segments.removeFirst()
+                    continue
+                }
+
+                let trimCount = Int(nextSequence &- first.sequenceNumber)
+                let payload = Data(first.payload.dropFirst(trimCount))
+                drained.append(payload)
+                nextSequence = nextSequence &+ UInt32(payload.count)
+                segments.removeFirst()
+                continue
+            }
+
+            break
+        }
+
+        bufferedBytes = segments.reduce(0) { $0 + $1.payload.count }
+        return drained
+    }
+}
+
+func tcpSequenceLessThan(_ lhs: UInt32, _ rhs: UInt32) -> Bool {
+    lhs != rhs && Int32(bitPattern: lhs &- rhs) < 0
+}
+
+func tcpSequenceLessThanOrEqual(_ lhs: UInt32, _ rhs: UInt32) -> Bool {
+    lhs == rhs || tcpSequenceLessThan(lhs, rhs)
 }
 
 private enum SOCKS5Connector {
