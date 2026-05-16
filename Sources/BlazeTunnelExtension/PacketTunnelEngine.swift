@@ -1,4 +1,3 @@
-import CFNetwork
 import Darwin
 import Foundation
 import NetworkExtension
@@ -12,6 +11,8 @@ struct PacketTunnelRuntimeConfiguration {
     var dnsOverHTTPSURL: URL
     var excludedIPv4Addresses: [String]
     var suppressIPv6DNS: Bool
+    var enableFakeIPDNS: Bool
+    var enableUDPRelay: Bool
 
     init(providerConfiguration: [String: Any]?) {
         httpHost = providerConfiguration?["httpHost"] as? String ?? "127.0.0.1"
@@ -22,6 +23,8 @@ struct PacketTunnelRuntimeConfiguration {
         dnsOverHTTPSURL = URL(string: dnsURL) ?? URL(string: "https://1.1.1.1/dns-query")!
         excludedIPv4Addresses = providerConfiguration?["excludedIPv4Addresses"] as? [String] ?? []
         suppressIPv6DNS = providerConfiguration?["suppressIPv6DNS"] as? Bool ?? true
+        enableFakeIPDNS = providerConfiguration?["enableFakeIPDNS"] as? Bool ?? true
+        enableUDPRelay = providerConfiguration?["enableUDPRelay"] as? Bool ?? false
     }
 }
 
@@ -31,7 +34,9 @@ final class PacketTunnelEngine: @unchecked Sendable {
     private let configuration: PacketTunnelRuntimeConfiguration
     private let queue = DispatchQueue(label: "com.chenhuazhao.blaze.tunnel.engine")
     private let dnsProxy: DNSOverHTTPSProxy
+    private let fakeIPStore = DNSFakeIPStore()
     private var flows: [TCPFlowKey: TCPForwarder] = [:]
+    private var udpFlows: [UDPFlowKey: UDPForwarder] = [:]
     private var stopped = false
 
     init(packetFlow: NEPacketTunnelFlow, configuration: PacketTunnelRuntimeConfiguration) {
@@ -41,7 +46,9 @@ final class PacketTunnelEngine: @unchecked Sendable {
             url: configuration.dnsOverHTTPSURL,
             httpProxyHost: configuration.httpHost,
             httpProxyPort: configuration.httpPort,
-            suppressIPv6DNS: configuration.suppressIPv6DNS
+            suppressIPv6DNS: configuration.suppressIPv6DNS,
+            enableFakeIPDNS: configuration.enableFakeIPDNS,
+            fakeIPStore: fakeIPStore
         )
     }
 
@@ -59,8 +66,11 @@ final class PacketTunnelEngine: @unchecked Sendable {
         queue.sync {
             stopped = true
             let activeFlows = flows.values
+            let activeUDPFlows = udpFlows.values
             flows.removeAll()
+            udpFlows.removeAll()
             activeFlows.forEach { $0.stop() }
+            activeUDPFlows.forEach { $0.stop() }
         }
     }
 
@@ -96,8 +106,12 @@ final class PacketTunnelEngine: @unchecked Sendable {
         if let existing = flows[key] {
             flow = existing
         } else if tcp.flags.contains(.syn) {
+            let destination = fakeIPStore.domain(for: ipv4.destinationAddress)
+                .map { SOCKS5Destination.domain($0) }
+                ?? .ipv4(ipv4.destinationAddress)
             flow = TCPForwarder(
                 key: key,
+                destination: destination,
                 socksHost: configuration.socksHost,
                 socksPort: configuration.socksPort,
                 packetWriter: { [weak self] packet in
@@ -123,8 +137,45 @@ final class PacketTunnelEngine: @unchecked Sendable {
             return
         }
 
+        if configuration.enableUDPRelay {
+            forwardUDP(ipv4: ipv4, udp: udp)
+            return
+        }
+
         logger.debug("Rejecting unsupported UDP \(IPv4AddressFormatter.string(from: ipv4.sourceAddress), privacy: .public):\(udp.sourcePort, privacy: .public) -> \(IPv4AddressFormatter.string(from: ipv4.destinationAddress), privacy: .public):\(udp.destinationPort, privacy: .public)")
         writeIPv4Packet(IPv4PacketFactory.icmpDestinationUnreachable(for: ipv4, code: 3))
+    }
+
+    private func forwardUDP(ipv4: IPv4Packet, udp: UDPPacket) {
+        let key = UDPFlowKey(
+            sourceAddress: ipv4.sourceAddress,
+            sourcePort: udp.sourcePort,
+            destinationAddress: ipv4.destinationAddress,
+            destinationPort: udp.destinationPort
+        )
+        let flow: UDPForwarder
+        if let existing = udpFlows[key] {
+            flow = existing
+        } else {
+            let destination = fakeIPStore.domain(for: ipv4.destinationAddress)
+                .map { SOCKS5Destination.domain($0) }
+                ?? .ipv4(ipv4.destinationAddress)
+            flow = UDPForwarder(
+                key: key,
+                destination: destination,
+                socksHost: configuration.socksHost,
+                socksPort: configuration.socksPort,
+                packetWriter: { [weak self] packet in
+                    self?.writeIPv4Packet(packet)
+                },
+                onClose: { [weak self] flowKey in
+                    self?.removeUDPFlow(flowKey)
+                }
+            )
+            udpFlows[key] = flow
+        }
+
+        flow.handle(udp, originalIPv4: ipv4)
     }
 
     private func writeIPv4Packet(_ packet: Data) {
@@ -136,9 +187,15 @@ final class PacketTunnelEngine: @unchecked Sendable {
             self?.flows.removeValue(forKey: key)
         }
     }
+
+    private func removeUDPFlow(_ key: UDPFlowKey) {
+        queue.async { [weak self] in
+            self?.udpFlows.removeValue(forKey: key)
+        }
+    }
 }
 
-private enum IPProtocolNumber {
+enum IPProtocolNumber {
     static let icmp: UInt8 = 1
     static let tcp: UInt8 = 6
     static let udp: UInt8 = 17
@@ -155,7 +212,7 @@ private struct TCPFlowKey: Hashable, Sendable {
     }
 }
 
-private struct IPv4Packet: Sendable {
+struct IPv4Packet: Sendable {
     var sourceAddress: UInt32
     var destinationAddress: UInt32
     var protocolNumber: UInt8
@@ -189,7 +246,7 @@ private struct IPv4Packet: Sendable {
     }
 }
 
-private struct TCPFlags: OptionSet, Sendable {
+struct TCPFlags: OptionSet, Sendable {
     let rawValue: UInt8
 
     static let fin = TCPFlags(rawValue: 0x01)
@@ -232,7 +289,7 @@ private struct TCPPacket: Sendable {
     }
 }
 
-private struct UDPPacket: Sendable {
+struct UDPPacket: Sendable {
     var sourcePort: UInt16
     var destinationPort: UInt16
     var payload: Data
@@ -265,28 +322,35 @@ private final class TCPForwarder: @unchecked Sendable {
     }
 
     private let key: TCPFlowKey
+    private let destination: SOCKS5Destination
     private let socksHost: String
     private let socksPort: Int
     private let packetWriter: @Sendable (Data) -> Void
     private let onClose: @Sendable (TCPFlowKey) -> Void
     private let queue: DispatchQueue
+    private var activityDeadline = TCPActivityDeadline(timeoutNanos: 120_000_000_000)
+    private var idleTimer: DispatchSourceTimer?
     private var state: State = .new
     private var socketFD: Int32 = -1
     private var connecting = false
     private var clientNextSequence: UInt32 = 0
     private var serverSequence: UInt32 = UInt32.random(in: 1...UInt32.max)
     private var inboundReassembler = TCPInboundReassembler(maxBufferedBytes: 512 * 1024)
+    private var outboundTracker = TCPOutboundSegmentTracker(maxRetainedBytes: 512 * 1024)
+    private var retransmissionTimer: DispatchSourceTimer?
     private var pendingFINSequence: UInt32?
     private var pendingPayloads: [Data] = []
 
     init(
         key: TCPFlowKey,
+        destination: SOCKS5Destination,
         socksHost: String,
         socksPort: Int,
         packetWriter: @escaping @Sendable (Data) -> Void,
         onClose: @escaping @Sendable (TCPFlowKey) -> Void
     ) {
         self.key = key
+        self.destination = destination
         self.socksHost = socksHost
         self.socksPort = socksPort
         self.packetWriter = packetWriter
@@ -308,6 +372,7 @@ private final class TCPForwarder: @unchecked Sendable {
 
     private func handleLocked(_ packet: TCPPacket) {
         guard state != .closed else { return }
+        markActivityLocked()
 
         if packet.flags.contains(.reset) {
             closeLocked(notify: true)
@@ -320,6 +385,10 @@ private final class TCPForwarder: @unchecked Sendable {
         }
 
         guard state != .new else { return }
+
+        if packet.flags.contains(.ack) {
+            handleACKLocked(packet.acknowledgmentNumber)
+        }
 
         var shouldAcknowledgePayload = false
         if !packet.payload.isEmpty {
@@ -368,6 +437,27 @@ private final class TCPForwarder: @unchecked Sendable {
         }
     }
 
+    private func handleACKLocked(_ acknowledgmentNumber: UInt32) {
+        switch outboundTracker.acknowledge(acknowledgmentNumber) {
+        case .progress:
+            if outboundTracker.isEmpty {
+                stopRetransmissionTimerLocked()
+                if state == .closing, socketFD < 0 {
+                    closeLocked(notify: true)
+                }
+            }
+        case .duplicate(let count):
+            guard count >= 3,
+                  let segment = outboundTracker.nextDuplicateAckRetransmission(at: DispatchTime.now().uptimeNanoseconds)
+            else {
+                return
+            }
+            retransmitSegmentLocked(segment)
+        case .ignored:
+            break
+        }
+    }
+
     private func startUpstreamLocked() {
         guard !connecting, socketFD < 0 else { return }
         connecting = true
@@ -378,7 +468,7 @@ private final class TCPForwarder: @unchecked Sendable {
                 let fd = try SOCKS5Connector.connect(
                     socksHost: self.socksHost,
                     socksPort: self.socksPort,
-                    destinationIPv4: self.key.destinationAddress,
+                    destination: self.destination,
                     destinationPort: self.key.destinationPort
                 )
                 self.queue.async {
@@ -398,6 +488,7 @@ private final class TCPForwarder: @unchecked Sendable {
             Darwin.close(fd)
             return
         }
+        markActivityLocked()
         socketFD = fd
         connecting = false
         if state == .synReceived {
@@ -499,6 +590,7 @@ private final class TCPForwarder: @unchecked Sendable {
     private func handleUpstreamData(_ data: Data) {
         queue.async { [weak self] in
             guard let self, self.state != .closed else { return }
+            self.markActivityLocked()
             var offset = 0
             let bytes = [UInt8](data)
             while offset < bytes.count {
@@ -513,8 +605,18 @@ private final class TCPForwarder: @unchecked Sendable {
     private func handleUpstreamClosed() {
         queue.async { [weak self] in
             guard let self, self.state != .closed else { return }
+            self.markActivityLocked()
+            if self.socketFD >= 0 {
+                Darwin.close(self.socketFD)
+                self.socketFD = -1
+            }
             self.sendSegmentLocked(flags: [.fin, .ack], payload: Data())
-            self.closeLocked(notify: true)
+            if self.outboundTracker.isEmpty {
+                self.closeLocked(notify: true)
+            } else {
+                self.state = .closing
+                self.startRetransmissionTimerLocked()
+            }
         }
     }
 
@@ -523,12 +625,13 @@ private final class TCPForwarder: @unchecked Sendable {
     }
 
     private func sendSegmentLocked(flags: TCPFlags, payload: Data, advanceSequence: Bool = true) {
+        let sequenceNumber = serverSequence
         let packet = IPv4PacketFactory.tcp(
             sourceAddress: key.destinationAddress,
             destinationAddress: key.sourceAddress,
             sourcePort: key.destinationPort,
             destinationPort: key.sourcePort,
-            sequenceNumber: serverSequence,
+            sequenceNumber: sequenceNumber,
             acknowledgmentNumber: clientNextSequence,
             flags: flags,
             window: advertisedReceiveWindowLocked(),
@@ -537,14 +640,101 @@ private final class TCPForwarder: @unchecked Sendable {
         packetWriter(packet)
 
         guard advanceSequence else { return }
-        var increment = UInt32(payload.count)
-        if flags.contains(.syn) {
-            increment = increment &+ 1
-        }
-        if flags.contains(.fin) {
-            increment = increment &+ 1
+        let increment = TCPOutboundSegmentTracker.sequenceLength(flags: flags, payloadLength: payload.count)
+        if increment > 0 {
+            guard outboundTracker.record(
+                sequenceNumber: sequenceNumber,
+                flags: flags,
+                payload: payload,
+                sentAt: DispatchTime.now().uptimeNanoseconds
+            ) else {
+                closeLocked(notify: true)
+                return
+            }
+            startRetransmissionTimerLocked()
         }
         serverSequence = serverSequence &+ increment
+    }
+
+    private func retransmitSegmentLocked(_ segment: TCPOutboundSegmentTracker.SegmentSnapshot) {
+        let packet = IPv4PacketFactory.tcp(
+            sourceAddress: key.destinationAddress,
+            destinationAddress: key.sourceAddress,
+            sourcePort: key.destinationPort,
+            destinationPort: key.sourcePort,
+            sequenceNumber: segment.sequenceNumber,
+            acknowledgmentNumber: clientNextSequence,
+            flags: segment.flags,
+            window: advertisedReceiveWindowLocked(),
+            payload: segment.payload
+        )
+        packetWriter(packet)
+    }
+
+    private func startRetransmissionTimerLocked() {
+        guard retransmissionTimer == nil, !outboundTracker.isEmpty else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            self?.handleRetransmissionTimerLocked()
+        }
+        retransmissionTimer = timer
+        timer.resume()
+    }
+
+    private func stopRetransmissionTimerLocked() {
+        retransmissionTimer?.cancel()
+        retransmissionTimer = nil
+    }
+
+    private func markActivityLocked() {
+        activityDeadline.markActivity(at: DispatchTime.now().uptimeNanoseconds)
+        startIdleTimerLocked()
+    }
+
+    private func startIdleTimerLocked() {
+        guard idleTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .seconds(30), repeating: .seconds(30))
+        timer.setEventHandler { [weak self] in
+            self?.handleIdleTimerLocked()
+        }
+        idleTimer = timer
+        timer.resume()
+    }
+
+    private func stopIdleTimerLocked() {
+        idleTimer?.cancel()
+        idleTimer = nil
+    }
+
+    private func handleIdleTimerLocked() {
+        guard state != .closed else {
+            stopIdleTimerLocked()
+            return
+        }
+        guard activityDeadline.isExpired(at: DispatchTime.now().uptimeNanoseconds) else { return }
+        sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
+        closeLocked(notify: true)
+    }
+
+    private func handleRetransmissionTimerLocked() {
+        guard state != .closed else {
+            stopRetransmissionTimerLocked()
+            return
+        }
+
+        if outboundTracker.isEmpty {
+            stopRetransmissionTimerLocked()
+            if state == .closing, socketFD < 0 {
+                closeLocked(notify: true)
+            }
+            return
+        }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard let segment = outboundTracker.nextTimedOutRetransmission(at: now) else { return }
+        retransmitSegmentLocked(segment)
     }
 
     private func advertisedReceiveWindowLocked() -> UInt16 {
@@ -554,6 +744,8 @@ private final class TCPForwarder: @unchecked Sendable {
     private func closeLocked(notify: Bool) {
         guard state != .closed else { return }
         state = .closed
+        stopIdleTimerLocked()
+        stopRetransmissionTimerLocked()
         if socketFD >= 0 {
             Darwin.close(socketFD)
             socketFD = -1
@@ -562,6 +754,164 @@ private final class TCPForwarder: @unchecked Sendable {
         if notify {
             onClose(key)
         }
+    }
+}
+
+struct TCPActivityDeadline {
+    private let timeoutNanos: UInt64
+    private var lastActivity: UInt64
+
+    init(timeoutNanos: UInt64, now: UInt64 = 0) {
+        self.timeoutNanos = timeoutNanos
+        lastActivity = now
+    }
+
+    mutating func markActivity(at now: UInt64) {
+        lastActivity = now
+    }
+
+    func isExpired(at now: UInt64) -> Bool {
+        now >= lastActivity + timeoutNanos
+    }
+}
+
+struct TCPOutboundSegmentTracker {
+    enum AckResult: Equatable {
+        case progress
+        case duplicate(Int)
+        case ignored
+    }
+
+    struct SegmentSnapshot: Equatable {
+        var sequenceNumber: UInt32
+        var flags: TCPFlags
+        var payload: Data
+    }
+
+    private struct Segment {
+        var sequenceNumber: UInt32
+        var flags: TCPFlags
+        var payload: Data
+        var sentAt: UInt64
+        var retransmissionCount: Int = 0
+
+        var length: UInt32 {
+            TCPOutboundSegmentTracker.sequenceLength(flags: flags, payloadLength: payload.count)
+        }
+
+        var endSequence: UInt32 {
+            sequenceNumber &+ length
+        }
+
+        var snapshot: SegmentSnapshot {
+            SegmentSnapshot(sequenceNumber: sequenceNumber, flags: flags, payload: payload)
+        }
+    }
+
+    private static let retransmissionTimeoutNanos: UInt64 = 1_500_000_000
+    private let maxRetainedBytes: Int
+    private var segments: [Segment] = []
+    private var retainedBytes = 0
+    private var lastAcknowledgment: UInt32?
+    private var duplicateAckCount = 0
+
+    init(maxRetainedBytes: Int) {
+        self.maxRetainedBytes = max(0, maxRetainedBytes)
+    }
+
+    var isEmpty: Bool {
+        segments.isEmpty
+    }
+
+    static func sequenceLength(flags: TCPFlags, payloadLength: Int) -> UInt32 {
+        var length = UInt32(payloadLength)
+        if flags.contains(.syn) {
+            length = length &+ 1
+        }
+        if flags.contains(.fin) {
+            length = length &+ 1
+        }
+        return length
+    }
+
+    mutating func record(sequenceNumber: UInt32, flags: TCPFlags, payload: Data, sentAt: UInt64) -> Bool {
+        let length = Self.sequenceLength(flags: flags, payloadLength: payload.count)
+        guard length > 0 else { return true }
+        guard retainedBytes + payload.count <= maxRetainedBytes else { return false }
+        retainedBytes += payload.count
+        segments.append(Segment(sequenceNumber: sequenceNumber, flags: flags, payload: payload, sentAt: sentAt))
+        return true
+    }
+
+    mutating func acknowledge(_ acknowledgmentNumber: UInt32) -> AckResult {
+        guard !segments.isEmpty else {
+            lastAcknowledgment = acknowledgmentNumber
+            duplicateAckCount = 0
+            return .ignored
+        }
+
+        if let lastAcknowledgment {
+            if tcpSequenceLessThan(acknowledgmentNumber, lastAcknowledgment) {
+                return .ignored
+            }
+
+            if acknowledgmentNumber == lastAcknowledgment {
+                duplicateAckCount += 1
+                return .duplicate(duplicateAckCount)
+            }
+        }
+
+        lastAcknowledgment = acknowledgmentNumber
+        duplicateAckCount = 0
+
+        var progressed = false
+        var updated: [Segment] = []
+        updated.reserveCapacity(segments.count)
+
+        for var segment in segments {
+            guard tcpSequenceLessThan(segment.sequenceNumber, acknowledgmentNumber) else {
+                updated.append(segment)
+                continue
+            }
+
+            progressed = true
+            if tcpSequenceLessThanOrEqual(segment.endSequence, acknowledgmentNumber) {
+                retainedBytes -= segment.payload.count
+                continue
+            }
+
+            let acknowledgedLength = Int(acknowledgmentNumber &- segment.sequenceNumber)
+            let trimCount = min(acknowledgedLength, segment.payload.count)
+            if trimCount > 0 {
+                segment.payload.removeFirst(trimCount)
+                retainedBytes -= trimCount
+            }
+            segment.sequenceNumber = acknowledgmentNumber
+            updated.append(segment)
+        }
+
+        segments = updated
+        return progressed ? .progress : .ignored
+    }
+
+    mutating func nextDuplicateAckRetransmission(at now: UInt64) -> SegmentSnapshot? {
+        nextRetransmission(at: now, requireTimeout: false)
+    }
+
+    mutating func nextTimedOutRetransmission(at now: UInt64) -> SegmentSnapshot? {
+        nextRetransmission(at: now, requireTimeout: true)
+    }
+
+    private mutating func nextRetransmission(at now: UInt64, requireTimeout: Bool) -> SegmentSnapshot? {
+        guard let index = segments.indices.first(where: { index in
+            !requireTimeout || now >= segments[index].sentAt + Self.retransmissionTimeoutNanos
+        }) else {
+            return nil
+        }
+
+        segments[index].sentAt = now
+        segments[index].retransmissionCount += 1
+        return segments[index].snapshot
     }
 }
 
@@ -697,6 +1047,11 @@ func tcpSequenceLessThanOrEqual(_ lhs: UInt32, _ rhs: UInt32) -> Bool {
     lhs == rhs || tcpSequenceLessThan(lhs, rhs)
 }
 
+enum SOCKS5Destination: Equatable, Sendable {
+    case ipv4(UInt32)
+    case domain(String)
+}
+
 private enum SOCKS5Connector {
     enum ConnectorError: Error {
         case invalidSocksEndpoint
@@ -705,7 +1060,7 @@ private enum SOCKS5Connector {
         case connectRejected(UInt8)
     }
 
-    static func connect(socksHost: String, socksPort: Int, destinationIPv4: UInt32, destinationPort: UInt16) throws -> Int32 {
+    static func connect(socksHost: String, socksPort: Int, destination: SOCKS5Destination, destinationPort: UInt16) throws -> Int32 {
         guard socksHost == "127.0.0.1", (1...65_535).contains(socksPort) else {
             throw ConnectorError.invalidSocksEndpoint
         }
@@ -743,8 +1098,7 @@ private enum SOCKS5Connector {
                 throw ConnectorError.handshakeFailed
             }
 
-            let ip = IPv4AddressFormatter.bytes(from: destinationIPv4)
-            try sendAll([0x05, 0x01, 0x00, 0x01] + ip + UInt16(destinationPort).bytes, fd: fd)
+            try sendAll([0x05, 0x01, 0x00] + addressBytes(for: destination) + UInt16(destinationPort).bytes, fd: fd)
             let head = try recvExact(count: 4, fd: fd)
             guard head[0] == 0x05 else {
                 throw ConnectorError.handshakeFailed
@@ -769,6 +1123,19 @@ private enum SOCKS5Connector {
         } catch {
             Darwin.close(fd)
             throw error
+        }
+    }
+
+    private static func addressBytes(for destination: SOCKS5Destination) throws -> [UInt8] {
+        switch destination {
+        case .ipv4(let address):
+            return [0x01] + IPv4AddressFormatter.bytes(from: address)
+        case .domain(let domain):
+            let bytes = Array(domain.utf8)
+            guard !bytes.isEmpty, bytes.count <= 255 else {
+                throw ConnectorError.invalidSocksEndpoint
+            }
+            return [0x03, UInt8(bytes.count)] + bytes
         }
     }
 
@@ -802,79 +1169,7 @@ private enum SOCKS5Connector {
     }
 }
 
-private final class DNSOverHTTPSProxy: @unchecked Sendable {
-    private let logger = Logger(subsystem: "com.chenhuazhao.blaze.tunnel", category: "DNSOverHTTPSProxy")
-    private let url: URL
-    private let session: URLSession
-    private let suppressIPv6DNS: Bool
-
-    init(url: URL, httpProxyHost: String, httpProxyPort: Int, suppressIPv6DNS: Bool) {
-        self.url = url
-        self.suppressIPv6DNS = suppressIPv6DNS
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 8
-        configuration.connectionProxyDictionary = [
-            kCFNetworkProxiesHTTPEnable as String: true,
-            kCFNetworkProxiesHTTPProxy as String: httpProxyHost,
-            kCFNetworkProxiesHTTPPort as String: httpProxyPort,
-            kCFNetworkProxiesHTTPSEnable as String: true,
-            kCFNetworkProxiesHTTPSProxy as String: httpProxyHost,
-            kCFNetworkProxiesHTTPSPort as String: httpProxyPort
-        ]
-        session = URLSession(configuration: configuration)
-    }
-
-    func handleQuery(ipv4: IPv4Packet, udp: UDPPacket, packetWriter: @escaping @Sendable (Data) -> Void) {
-        if suppressIPv6DNS,
-           DNSMessage.isAAAAQuestion(udp.payload),
-           let response = DNSMessage.emptyNoErrorResponse(for: udp.payload) {
-            logger.debug("Suppressing AAAA DNS answer while IPv6 packet forwarding is disabled")
-            let packet = IPv4PacketFactory.udp(
-                sourceAddress: ipv4.destinationAddress,
-                destinationAddress: ipv4.sourceAddress,
-                sourcePort: udp.destinationPort,
-                destinationPort: udp.sourcePort,
-                payload: response
-            )
-            packetWriter(packet)
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = udp.payload
-        request.setValue("application/dns-message", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/dns-message", forHTTPHeaderField: "Accept")
-
-        let sourceAddress = ipv4.sourceAddress
-        let destinationAddress = ipv4.destinationAddress
-        let sourcePort = udp.sourcePort
-        let destinationPort = udp.destinationPort
-
-        session.dataTask(with: request) { data, _, error in
-            if let error {
-                self.logger.error("DoH query failed: \(String(describing: error), privacy: .public)")
-                return
-            }
-            guard let data, !data.isEmpty else {
-                self.logger.error("DoH query returned no response bytes")
-                return
-            }
-            self.logger.debug("DoH query answered \(data.count, privacy: .public) bytes")
-            let packet = IPv4PacketFactory.udp(
-                sourceAddress: destinationAddress,
-                destinationAddress: sourceAddress,
-                sourcePort: destinationPort,
-                destinationPort: sourcePort,
-                payload: data
-            )
-            packetWriter(packet)
-        }.resume()
-    }
-}
-
-private enum IPv4PacketFactory {
+enum IPv4PacketFactory {
     static func tcp(
         sourceAddress: UInt32,
         destinationAddress: UInt32,
@@ -989,69 +1284,7 @@ private enum IPv4PacketFactory {
     }
 }
 
-private enum DNSMessage {
-    static func isAAAAQuestion(_ data: Data) -> Bool {
-        guard let question = questionRangeAndType(in: data) else { return false }
-        return question.type == 28
-    }
-
-    static func emptyNoErrorResponse(for query: Data) -> Data? {
-        guard query.count >= 12,
-              let flags = query.uint16(at: 2),
-              let qdCount = query.uint16(at: 4),
-              qdCount > 0,
-              let question = questionRangeAndType(in: query)
-        else {
-            return nil
-        }
-
-        var response = [UInt8](repeating: 0, count: 12)
-        response[0] = query[0]
-        response[1] = query[1]
-        let responseFlags = UInt16(0x8000) | (flags & 0x7900) | 0x0080
-        response.writeUInt16(responseFlags, at: 2)
-        response.writeUInt16(qdCount, at: 4)
-        response.writeUInt16(0, at: 6)
-        response.writeUInt16(0, at: 8)
-        response.writeUInt16(0, at: 10)
-        response.append(contentsOf: query[question.range])
-        return Data(response)
-    }
-
-    private static func questionRangeAndType(in data: Data) -> (range: Range<Data.Index>, type: UInt16)? {
-        guard data.count >= 12,
-              let qdCount = data.uint16(at: 4),
-              qdCount == 1
-        else {
-            return nil
-        }
-
-        var offset = 12
-        while offset < data.count {
-            let length = Int(data[offset])
-            if (length & 0xC0) != 0 {
-                return nil
-            }
-            offset += 1
-            if length == 0 {
-                break
-            }
-            guard offset + length <= data.count else {
-                return nil
-            }
-            offset += length
-        }
-
-        guard offset + 4 <= data.count,
-              let type = data.uint16(at: offset)
-        else {
-            return nil
-        }
-        return (12..<(offset + 4), type)
-    }
-}
-
-private enum IPv4AddressFormatter {
+enum IPv4AddressFormatter {
     static func bytes(from address: UInt32) -> [UInt8] {
         [
             UInt8((address >> 24) & 0xff),
@@ -1066,7 +1299,7 @@ private enum IPv4AddressFormatter {
     }
 }
 
-private extension Data {
+extension Data {
     func uint16(at offset: Int) -> UInt16? {
         guard offset >= 0, offset + 1 < count else { return nil }
         return (UInt16(self[offset]) << 8) | UInt16(self[offset + 1])
@@ -1081,7 +1314,7 @@ private extension Data {
     }
 }
 
-private extension Array where Element == UInt8 {
+extension Array where Element == UInt8 {
     mutating func writeUInt16(_ value: UInt16, at offset: Int) {
         self[offset] = UInt8((value >> 8) & 0xff)
         self[offset + 1] = UInt8(value & 0xff)
@@ -1095,7 +1328,7 @@ private extension Array where Element == UInt8 {
     }
 }
 
-private extension UInt16 {
+extension UInt16 {
     var bytes: [UInt8] {
         [UInt8((self >> 8) & 0xff), UInt8(self & 0xff)]
     }

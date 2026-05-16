@@ -39,7 +39,9 @@ enum PacketTunnelConfigurationManager {
             "socksPort": socksPort,
             "dnsOverHTTPSURL": "https://1.1.1.1/dns-query",
             "excludedIPv4Addresses": excludedIPv4Addresses,
-            "suppressIPv6DNS": true
+            "suppressIPv6DNS": true,
+            "enableFakeIPDNS": true,
+            "enableUDPRelay": false
         ]
 
         manager.localizedDescription = localizedDescription

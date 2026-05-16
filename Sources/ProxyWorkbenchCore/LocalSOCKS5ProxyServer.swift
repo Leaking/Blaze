@@ -97,6 +97,11 @@ public actor LocalSOCKS5ProxyServer {
             failureContext.target = request.authority
             failureContext.host = request.host
             failureContext.port = request.port
+            if request.command == 0x03 {
+                try await handleUDPAssociate(clientFD, request: request, logStore: logStore, routingProfile: routingProfile, groupSelections: groupSelections)
+                return
+            }
+
             guard request.command == 0x01 else {
                 try sendSOCKSReply(0x07, to: clientFD)
                 close(clientFD)
@@ -233,6 +238,212 @@ public actor LocalSOCKS5ProxyServer {
             await logStore.append(failureContext.failedEvent(error: error))
             _ = try? sendSOCKSReply(0x01, to: clientFD)
             close(clientFD)
+        }
+    }
+
+    private static func handleUDPAssociate(
+        _ clientFD: Int32,
+        request: SOCKS5Request,
+        logStore: ProxyEventStore,
+        routingProfile: ProxyProfile,
+        groupSelections: [String: String]
+    ) async throws {
+        let association = try bindUDPAssociationSocket()
+        defer {
+            close(association.fd)
+            close(clientFD)
+        }
+
+        var flows: [SOCKS5UDPFlowKey: SOCKS5UDPDirectFlow] = [:]
+        defer {
+            for flow in flows.values {
+                close(flow.fd)
+            }
+        }
+
+        try sendSOCKSReply(0x00, boundHost: "127.0.0.1", boundPort: association.port, to: clientFD)
+        await logStore.append(
+            ProxyServerEvent(
+                method: "SOCKS5 UDP",
+                target: request.authority,
+                host: request.host,
+                port: request.port,
+                policy: "ASSOCIATE",
+                status: "Connected",
+                rule: nil,
+                note: "UDP ASSOCIATE bound 127.0.0.1:\(association.port)"
+            )
+        )
+
+        while !Task.isCancelled {
+            removeExpiredUDPFlows(&flows)
+            let polledFlowKeys = Array(flows.keys)
+            var pollFDs = [pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0), pollfd(fd: association.fd, events: Int16(POLLIN), revents: 0)]
+            pollFDs.append(contentsOf: polledFlowKeys.compactMap { key in
+                flows[key].map { pollfd(fd: $0.fd, events: Int16(POLLIN), revents: 0) }
+            })
+
+            let pollResult = poll(&pollFDs, nfds_t(pollFDs.count), 1_000)
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw ProxyServerError.posix("poll", errno)
+            }
+            if pollResult == 0 {
+                continue
+            }
+            if hasTerminalPollEvent(pollFDs[0].revents) || hasReadableControlSocketClosed(clientFD, revents: pollFDs[0].revents) {
+                break
+            }
+
+            if hasPollEvent(pollFDs[1].revents, Int16(POLLIN)) {
+                do {
+                    guard let inbound = try receiveSOCKS5UDPDatagram(from: association.fd) else {
+                        continue
+                    }
+                    try await handleUDPClientDatagram(
+                        inbound,
+                        flows: &flows,
+                        logStore: logStore,
+                        routingProfile: routingProfile,
+                        groupSelections: groupSelections
+                    )
+                } catch {
+                    await logStore.append(
+                        ProxyServerEvent(
+                            method: "SOCKS5 UDP",
+                            target: request.authority,
+                            host: request.host,
+                            port: request.port,
+                            policy: "ASSOCIATE",
+                            status: "Failed",
+                            rule: nil,
+                            note: "UDP client datagram failed: \(error)"
+                        )
+                    )
+                }
+            }
+
+            for (offset, key) in polledFlowKeys.enumerated() {
+                let pollIndex = offset + 2
+                guard pollIndex < pollFDs.count, var flow = flows[key] else { continue }
+                if hasTerminalPollEvent(pollFDs[pollIndex].revents) {
+                    close(flow.fd)
+                    flows.removeValue(forKey: key)
+                    continue
+                }
+                guard hasPollEvent(pollFDs[pollIndex].revents, Int16(POLLIN)) else { continue }
+                do {
+                    guard let payload = try receiveUDPResponse(from: flow.fd) else {
+                        continue
+                    }
+                    let response = try SOCKS5UDPMessage(destination: flow.destination, payload: payload).encoded()
+                    try flow.clientAddress.send(response, from: association.fd)
+                    flow.lastActivity = DispatchTime.now().uptimeNanoseconds
+                    flows[key] = flow
+                } catch {
+                    close(flow.fd)
+                    flows.removeValue(forKey: key)
+                    await logStore.append(
+                        ProxyServerEvent(
+                            method: "SOCKS5 UDP",
+                            target: flow.destination.authority,
+                            host: flow.destination.host,
+                            port: flow.destination.port,
+                            policy: flow.policy,
+                            status: "Failed",
+                            rule: flow.rule,
+                            note: "UDP direct response failed: \(error)"
+                        )
+                    )
+                }
+            }
+        }
+
+        await logStore.append(
+            ProxyServerEvent(
+                method: "SOCKS5 UDP",
+                target: request.authority,
+                host: request.host,
+                port: request.port,
+                policy: "ASSOCIATE",
+                status: "Closed",
+                rule: nil,
+                note: "UDP ASSOCIATE closed"
+            )
+        )
+    }
+
+    private static func handleUDPClientDatagram(
+        _ inbound: SOCKS5UDPInboundDatagram,
+        flows: inout [SOCKS5UDPFlowKey: SOCKS5UDPDirectFlow],
+        logStore: ProxyEventStore,
+        routingProfile: ProxyProfile,
+        groupSelections: [String: String]
+    ) async throws {
+        let destination = inbound.message.destination
+        let route = routeDecision(for: destination.authority, profile: routingProfile, groupSelections: groupSelections)
+        switch route.action {
+        case .direct:
+            let key = SOCKS5UDPFlowKey(destination: destination)
+            var flow: SOCKS5UDPDirectFlow
+            if let existing = flows[key] {
+                flow = existing
+                flow.clientAddress = inbound.clientAddress
+            } else {
+                let fd = try await openDirectUDPSocket(destination: destination)
+                flow = SOCKS5UDPDirectFlow(
+                    fd: fd,
+                    destination: destination,
+                    clientAddress: inbound.clientAddress,
+                    policy: route.policy,
+                    rule: route.rule,
+                    lastActivity: DispatchTime.now().uptimeNanoseconds
+                )
+                flows[key] = flow
+                await logStore.append(
+                    ProxyServerEvent(
+                        method: "SOCKS5 UDP",
+                        target: destination.authority,
+                        host: destination.host,
+                        port: destination.port,
+                        policy: route.policy,
+                        status: "Connected",
+                        rule: route.rule,
+                        note: "\(route.note); UDP direct"
+                    )
+                )
+            }
+            try sendUDP(inbound.message.payload, to: flow.fd)
+            flow.lastActivity = DispatchTime.now().uptimeNanoseconds
+            flows[key] = flow
+
+        case .reject:
+            await logStore.append(
+                ProxyServerEvent(
+                    method: "SOCKS5 UDP",
+                    target: destination.authority,
+                    host: destination.host,
+                    port: destination.port,
+                    policy: route.policy,
+                    status: "Rejected",
+                    rule: route.rule,
+                    note: route.note
+                )
+            )
+
+        case .unsupported, .httpProxy, .socks5Proxy, .trojanProxy:
+            await logStore.append(
+                ProxyServerEvent(
+                    method: "SOCKS5 UDP",
+                    target: destination.authority,
+                    host: destination.host,
+                    port: destination.port,
+                    policy: route.policy,
+                    status: "Unsupported",
+                    rule: route.rule,
+                    note: "\(route.note); UDP relay via selected upstream is not implemented"
+                )
+            )
         }
     }
 
@@ -478,8 +689,173 @@ public actor LocalSOCKS5ProxyServer {
         return result
     }
 
-    private static func sendSOCKSReply(_ code: UInt8, to fd: Int32) throws {
-        try sendAll(Data([0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0]), to: fd)
+    private static func sendSOCKSReply(_ code: UInt8, boundHost: String = "0.0.0.0", boundPort: Int = 0, to fd: Int32) throws {
+        var reply = Data([0x05, code, 0x00])
+        reply.append(try socks5AddressBytes(host: boundHost))
+        var networkPort = UInt16(boundPort).bigEndian
+        withUnsafeBytes(of: &networkPort) { reply.append(contentsOf: $0) }
+        try sendAll(reply, to: fd)
+    }
+
+    private static func bindUDPAssociationSocket() throws -> BoundUDPAssociationSocket {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else {
+            throw ProxyServerError.posix("socket", errno)
+        }
+        ProxySocketOptions.prepare(fd)
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            let saved = errno
+            close(fd)
+            throw ProxyServerError.posix("bind", saved)
+        }
+
+        var bound = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &bound) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &length)
+            }
+        }
+        guard nameResult == 0 else {
+            let saved = errno
+            close(fd)
+            throw ProxyServerError.posix("getsockname", saved)
+        }
+        return BoundUDPAssociationSocket(fd: fd, port: Int(in_port_t(bigEndian: bound.sin_port)))
+    }
+
+    private static func receiveSOCKS5UDPDatagram(from fd: Int32) throws -> SOCKS5UDPInboundDatagram? {
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let count = withUnsafeMutablePointer(to: &storage) { storagePointer in
+            storagePointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                buffer.withUnsafeMutableBytes { rawBuffer in
+                    recvfrom(fd, rawBuffer.baseAddress, rawBuffer.count, 0, sockaddrPointer, &length)
+                }
+            }
+        }
+        if count < 0 {
+            if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
+                return nil
+            }
+            throw ProxyServerError.posix("recvfrom", errno)
+        }
+        let payload = Data(buffer.prefix(count))
+        let message = try SOCKS5UDPMessage.parse(payload)
+        return SOCKS5UDPInboundDatagram(message: message, clientAddress: SOCKS5UDPClientAddress(storage: storage, length: length))
+    }
+
+    private static func receiveUDPResponse(from fd: Int32) throws -> Data? {
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+        let count = buffer.withUnsafeMutableBytes { rawBuffer in
+            recv(fd, rawBuffer.baseAddress, rawBuffer.count, 0)
+        }
+        if count < 0 {
+            if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
+                return nil
+            }
+            throw ProxyServerError.posix("recv", errno)
+        }
+        if count == 0 {
+            return nil
+        }
+        return Data(buffer.prefix(count))
+    }
+
+    private static func openDirectUDPSocket(destination: SOCKSDestination) async throws -> Int32 {
+        if !destination.host.isIPAddressLiteral {
+            for address in await DNSOverHTTPSJSONResolver.resolveA(destination.host) {
+                if let fd = try? openDirectUDPSocket(host: address, port: destination.port) {
+                    return fd
+                }
+            }
+        }
+        return try openDirectUDPSocket(host: destination.host, port: destination.port)
+    }
+
+    private static func openDirectUDPSocket(host: String, port: Int) throws -> Int32 {
+        var hints = addrinfo(
+            ai_flags: AI_NUMERICSERV,
+            ai_family: AF_UNSPEC,
+            ai_socktype: SOCK_DGRAM,
+            ai_protocol: IPPROTO_UDP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var info: UnsafeMutablePointer<addrinfo>?
+        let lookup = getaddrinfo(host, String(port), &hints, &info)
+        guard lookup == 0, let first = info else {
+            throw ProxyServerError.lookup(String(cString: gai_strerror(lookup)))
+        }
+        defer { freeaddrinfo(first) }
+
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        var savedErrno: Int32 = 0
+        while let address = current {
+            let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
+            if fd >= 0 {
+                if let socketAddress = address.pointee.ai_addr {
+                    ProxySocketOptions.prepareOutbound(fd, destination: socketAddress)
+                } else {
+                    ProxySocketOptions.prepare(fd)
+                }
+                if Darwin.connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 {
+                    return fd
+                }
+                savedErrno = errno
+                close(fd)
+            }
+            current = address.pointee.ai_next
+        }
+        throw ProxyServerError.posix("connect", savedErrno)
+    }
+
+    private static func sendUDP(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+            let count = send(fd, baseAddress, data.count, 0)
+            guard count == data.count else {
+                throw ProxyServerError.posix("send", errno)
+            }
+        }
+    }
+
+    private static func removeExpiredUDPFlows(_ flows: inout [SOCKS5UDPFlowKey: SOCKS5UDPDirectFlow]) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        for (key, flow) in flows where now > flow.lastActivity + socks5UDPFlowIdleTimeoutNanoseconds {
+            close(flow.fd)
+            flows.removeValue(forKey: key)
+        }
+    }
+
+    private static func hasPollEvent(_ revents: Int16, _ event: Int16) -> Bool {
+        (revents & event) != 0
+    }
+
+    private static func hasTerminalPollEvent(_ revents: Int16) -> Bool {
+        hasPollEvent(revents, Int16(POLLERR)) || hasPollEvent(revents, Int16(POLLHUP)) || hasPollEvent(revents, Int16(POLLNVAL))
+    }
+
+    private static func hasReadableControlSocketClosed(_ fd: Int32, revents: Int16) -> Bool {
+        guard hasPollEvent(revents, Int16(POLLIN)) else { return false }
+        var byte: UInt8 = 0
+        let count = recv(fd, &byte, 1, MSG_PEEK)
+        return count >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
     }
 
     private static func readHTTPHeader(from fd: Int32) throws -> String {
@@ -620,7 +996,8 @@ private struct SOCKS5Request: Sendable {
 
         let portBytes = try LocalSOCKS5ProxyServer_recvExact(2, from: fd)
         let port = Int(UInt16(portBytes[0]) << 8 | UInt16(portBytes[1]))
-        guard !host.isEmpty, (1...65535).contains(port) else {
+        let validPortRange = head[1] == 0x03 ? 0...65535 : 1...65535
+        guard !host.isEmpty, validPortRange.contains(port) else {
             throw ProxyServerError.invalidDestination
         }
 
@@ -632,6 +1009,8 @@ private struct SOCKSDestination: Sendable {
     var host: String
     var port: Int
     var trojanAddress: TrojanProtocol.Address
+
+    var authority: String { "\(host):\(port)" }
 
     var isFakeIP: Bool {
         ProxyIPv4AddressInspector.isFakeIP(host)
@@ -663,6 +1042,138 @@ private struct SOCKSPolicyResolution: Sendable {
     var path: [String]
 }
 
+private let socks5UDPFlowIdleTimeoutNanoseconds: UInt64 = 120 * 1_000_000_000
+
+private struct BoundUDPAssociationSocket {
+    var fd: Int32
+    var port: Int
+}
+
+private struct SOCKS5UDPFlowKey: Hashable {
+    var host: String
+    var port: Int
+
+    init(destination: SOCKSDestination) {
+        host = destination.host
+        port = destination.port
+    }
+}
+
+private struct SOCKS5UDPDirectFlow {
+    var fd: Int32
+    var destination: SOCKSDestination
+    var clientAddress: SOCKS5UDPClientAddress
+    var policy: String
+    var rule: String
+    var lastActivity: UInt64
+}
+
+private struct SOCKS5UDPInboundDatagram {
+    var message: SOCKS5UDPMessage
+    var clientAddress: SOCKS5UDPClientAddress
+}
+
+private struct SOCKS5UDPClientAddress {
+    var storage: sockaddr_storage
+    var length: socklen_t
+
+    func send(_ data: Data, from fd: Int32) throws {
+        var storage = storage
+        var result: Int = -1
+        data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                result = 0
+                return
+            }
+            result = withUnsafePointer(to: &storage) { storagePointer in
+                storagePointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                    sendto(fd, baseAddress, data.count, 0, sockaddrPointer, length)
+                }
+            }
+        }
+        guard result == data.count else {
+            throw ProxyServerError.posix("sendto", errno)
+        }
+    }
+}
+
+private struct SOCKS5UDPMessage {
+    var destination: SOCKSDestination
+    var payload: Data
+
+    static func parse(_ data: Data) throws -> SOCKS5UDPMessage {
+        let bytes = Array(data)
+        guard bytes.count >= 4, bytes[0] == 0, bytes[1] == 0 else {
+            throw ProxyServerError.socks5("Invalid UDP datagram header")
+        }
+        guard bytes[2] == 0 else {
+            throw ProxyServerError.socks5("Fragmented UDP datagrams are unsupported")
+        }
+
+        var index = 4
+        let host: String
+        let trojanAddress: (Int) -> TrojanProtocol.Address
+        switch bytes[3] {
+        case 0x01:
+            guard bytes.count >= index + 4 + 2 else {
+                throw ProxyServerError.socks5("Truncated UDP IPv4 address")
+            }
+            let addressBytes = Array(bytes[index..<index + 4])
+            index += 4
+            host = addressBytes.map(String.init).joined(separator: ".")
+            trojanAddress = { .ipv4(addressBytes, port: $0) }
+        case 0x03:
+            guard bytes.count >= index + 1 else {
+                throw ProxyServerError.socks5("Truncated UDP domain length")
+            }
+            let length = Int(bytes[index])
+            index += 1
+            guard bytes.count >= index + length + 2 else {
+                throw ProxyServerError.socks5("Truncated UDP domain address")
+            }
+            let hostBytes = Array(bytes[index..<index + length])
+            index += length
+            host = String(bytes: hostBytes, encoding: .utf8) ?? ""
+            trojanAddress = { .domainName(host: host, port: $0) }
+        case 0x04:
+            guard bytes.count >= index + 16 + 2 else {
+                throw ProxyServerError.socks5("Truncated UDP IPv6 address")
+            }
+            let addressBytes = Array(bytes[index..<index + 16])
+            index += 16
+            var storage = addressBytes
+            var string = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+            storage.withUnsafeMutableBytes { rawBuffer in
+                _ = inet_ntop(AF_INET6, rawBuffer.baseAddress, &string, socklen_t(INET6_ADDRSTRLEN))
+            }
+            let end = string.firstIndex(of: 0) ?? string.endIndex
+            host = String(decoding: string[..<end].map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            trojanAddress = { .ipv6(addressBytes, port: $0) }
+        default:
+            throw ProxyServerError.socks5("Unsupported UDP address type")
+        }
+
+        let port = Int(UInt16(bytes[index]) << 8 | UInt16(bytes[index + 1]))
+        index += 2
+        guard !host.isEmpty, (1...65535).contains(port) else {
+            throw ProxyServerError.invalidDestination
+        }
+        return SOCKS5UDPMessage(
+            destination: SOCKSDestination(host: host, port: port, trojanAddress: trojanAddress(port)),
+            payload: Data(bytes[index...])
+        )
+    }
+
+    func encoded() throws -> Data {
+        var result = Data([0x00, 0x00, 0x00])
+        result.append(try LocalSOCKS5ProxyServer_socks5AddressBytes(host: destination.host))
+        var networkPort = UInt16(destination.port).bigEndian
+        withUnsafeBytes(of: &networkPort) { result.append(contentsOf: $0) }
+        result.append(payload)
+        return result
+    }
+}
+
 private func LocalSOCKS5ProxyServer_recvExact(_ byteCount: Int, from fd: Int32) throws -> [UInt8] {
     var result: [UInt8] = []
     result.reserveCapacity(byteCount)
@@ -674,5 +1185,29 @@ private func LocalSOCKS5ProxyServer_recvExact(_ byteCount: Int, from fd: Int32) 
         }
         result.append(contentsOf: buffer.prefix(count))
     }
+    return result
+}
+
+private func LocalSOCKS5ProxyServer_socks5AddressBytes(host: String) throws -> Data {
+    var ipv4 = in_addr()
+    if inet_pton(AF_INET, host, &ipv4) == 1 {
+        var result = Data([0x01])
+        withUnsafeBytes(of: &ipv4.s_addr) { result.append(contentsOf: $0) }
+        return result
+    }
+
+    var ipv6 = in6_addr()
+    if inet_pton(AF_INET6, host, &ipv6) == 1 {
+        var result = Data([0x04])
+        withUnsafeBytes(of: &ipv6) { result.append(contentsOf: $0) }
+        return result
+    }
+
+    let hostData = Data(host.utf8)
+    guard hostData.count <= 255 else {
+        throw ProxyServerError.socks5("Destination host is too long")
+    }
+    var result = Data([0x03, UInt8(hostData.count)])
+    result.append(hostData)
     return result
 }

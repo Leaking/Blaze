@@ -487,6 +487,85 @@ final class LocalHTTPProxyServerTests: XCTestCase {
         XCTAssertEqual(connectedEvent?.policy, "DIRECT")
     }
 
+    func testLocalSOCKS5UDPAssociateRelaysDirectDatagram() async throws {
+        let origin = try TinyUDPEchoServer()
+        defer { origin.stop() }
+
+        let logStore = ProxyEventStore()
+        let socks = LocalSOCKS5ProxyServer(
+            logStore: logStore,
+            routingProfile: ProxyProfile(
+                rules: [
+                    ProxyRule(type: "DEST-PORT", value: "\(origin.port)", policy: "DIRECT", options: [], sourceLine: 1, rawLine: "DEST-PORT,\(origin.port),DIRECT"),
+                    ProxyRule(type: "FINAL", value: "", policy: "REJECT", options: [], sourceLine: 2, rawLine: "FINAL,REJECT")
+                ]
+            )
+        )
+        let socksPort = try freeLoopbackPort()
+        try await socks.start(port: socksPort)
+        defer {
+            Task { await socks.stop() }
+        }
+
+        let controlFD = try connectLoopback(port: socksPort)
+        defer { close(controlFD) }
+        let relayPort = try openSOCKS5UDPAssociation(controlFD: controlFD)
+
+        let udpFD = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        XCTAssertGreaterThanOrEqual(udpFD, 0)
+        defer { close(udpFD) }
+
+        let payload = Data("udp-associate-ok".utf8)
+        let request = makeSOCKS5UDPDatagram(host: "127.0.0.1", port: origin.port, payload: payload)
+        try sendUDPDatagram(request, from: udpFD, toLoopbackPort: relayPort)
+
+        let response = try XCTUnwrap(recvUDPDatagram(from: udpFD, timeoutMS: 3_000))
+        XCTAssertEqual(Array(response.prefix(10)), [0x00, 0x00, 0x00, 0x01, 127, 0, 0, 1, UInt8((origin.port >> 8) & 0xFF), UInt8(origin.port & 0xFF)])
+        XCTAssertEqual(Data(response.dropFirst(10)), payload)
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let events = await logStore.events()
+        XCTAssertTrue(events.contains { $0.method == "SOCKS5 UDP" && $0.status == "Connected" && $0.policy == "DIRECT" })
+    }
+
+    func testLocalSOCKS5UDPAssociateDoesNotRelayRejectedDatagram() async throws {
+        let origin = try TinyUDPEchoServer()
+        defer { origin.stop() }
+
+        let logStore = ProxyEventStore()
+        let socks = LocalSOCKS5ProxyServer(
+            logStore: logStore,
+            routingProfile: ProxyProfile(
+                rules: [
+                    ProxyRule(type: "FINAL", value: "", policy: "REJECT", options: [], sourceLine: 1, rawLine: "FINAL,REJECT")
+                ]
+            )
+        )
+        let socksPort = try freeLoopbackPort()
+        try await socks.start(port: socksPort)
+        defer {
+            Task { await socks.stop() }
+        }
+
+        let controlFD = try connectLoopback(port: socksPort)
+        defer { close(controlFD) }
+        let relayPort = try openSOCKS5UDPAssociation(controlFD: controlFD)
+
+        let udpFD = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        XCTAssertGreaterThanOrEqual(udpFD, 0)
+        defer { close(udpFD) }
+
+        let payload = Data("should-not-leak".utf8)
+        let request = makeSOCKS5UDPDatagram(host: "127.0.0.1", port: origin.port, payload: payload)
+        try sendUDPDatagram(request, from: udpFD, toLoopbackPort: relayPort)
+
+        XCTAssertNil(try recvUDPDatagram(from: udpFD, timeoutMS: 300))
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let events = await logStore.events()
+        XCTAssertTrue(events.contains { $0.method == "SOCKS5 UDP" && $0.status == "Rejected" && $0.policy == "REJECT" })
+    }
+
     func testSelectedGroupPolicyOverridesDefaultMember() async throws {
         let origin = try TinyHTTPServer(responseBody: "selected-direct-ok")
         defer { origin.stop() }
@@ -618,6 +697,80 @@ private final class TinyHTTPServer: @unchecked Sendable {
     func stop() {
         task?.cancel()
         shutdown(fd, SHUT_RDWR)
+        close(fd)
+    }
+}
+
+private final class TinyUDPEchoServer: @unchecked Sendable {
+    let port: Int
+    private let fd: Int32
+    private var task: Task<Void, Never>?
+
+    init() throws {
+        let socketFD = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard socketFD >= 0 else {
+            throw ProxyServerError.posix("socket", errno)
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            let saved = errno
+            close(socketFD)
+            throw ProxyServerError.posix("bind", saved)
+        }
+
+        var bound = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &bound) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(socketFD, $0, &length)
+            }
+        }
+        guard nameResult == 0 else {
+            let saved = errno
+            close(socketFD)
+            throw ProxyServerError.posix("getsockname", saved)
+        }
+
+        fd = socketFD
+        port = Int(in_port_t(bigEndian: bound.sin_port))
+
+        task = Task.detached(priority: .utility) { [socketFD] in
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while !Task.isCancelled {
+                var clientAddress = sockaddr_storage()
+                var clientLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+                let count = withUnsafeMutablePointer(to: &clientAddress) { addressPointer in
+                    addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                        buffer.withUnsafeMutableBytes { rawBuffer in
+                            recvfrom(socketFD, rawBuffer.baseAddress, rawBuffer.count, 0, sockaddrPointer, &clientLength)
+                        }
+                    }
+                }
+                guard count > 0 else { break }
+                _ = withUnsafePointer(to: &clientAddress) { addressPointer in
+                    addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                        buffer.withUnsafeBytes { rawBuffer in
+                            sendto(socketFD, rawBuffer.baseAddress, count, 0, sockaddrPointer, clientLength)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
         close(fd)
     }
 }
@@ -839,6 +992,21 @@ private func connectLoopback(port: Int) throws -> Int32 {
     return fd
 }
 
+private func openSOCKS5UDPAssociation(controlFD: Int32) throws -> Int {
+    try sendAll(Data([0x05, 0x01, 0x00]), to: controlFD)
+    XCTAssertEqual(try recvExact(2, from: controlFD), [0x05, 0x00])
+
+    let request = Data([0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+    try sendAll(request, to: controlFD)
+
+    let reply = try recvExact(10, from: controlFD)
+    XCTAssertEqual(reply[0], 0x05)
+    XCTAssertEqual(reply[1], 0x00)
+    XCTAssertEqual(reply[3], 0x01)
+    XCTAssertEqual(Array(reply[4..<8]), [127, 0, 0, 1])
+    return Int(UInt16(reply[8]) << 8 | UInt16(reply[9]))
+}
+
 private func sendAll(_ string: String, to fd: Int32) throws {
     try sendAll(Data(string.utf8), to: fd)
 }
@@ -893,6 +1061,63 @@ private func readHeaderOnly(from fd: Int32) -> String {
         if data.range(of: terminator) != nil { break }
     }
     return String(data: data, encoding: .utf8) ?? ""
+}
+
+private func makeSOCKS5UDPDatagram(host: String, port: Int, payload: Data) -> Data {
+    var result = Data([0x00, 0x00, 0x00])
+    var ipv4 = in_addr()
+    if inet_pton(AF_INET, host, &ipv4) == 1 {
+        result.append(0x01)
+        withUnsafeBytes(of: &ipv4.s_addr) { result.append(contentsOf: $0) }
+    } else {
+        let hostData = Data(host.utf8)
+        result.append(0x03)
+        result.append(UInt8(hostData.count))
+        result.append(hostData)
+    }
+    result.append(UInt8((port >> 8) & 0xFF))
+    result.append(UInt8(port & 0xFF))
+    result.append(payload)
+    return result
+}
+
+private func sendUDPDatagram(_ data: Data, from fd: Int32, toLoopbackPort port: Int) throws {
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let count = data.withUnsafeBytes { rawBuffer in
+        withUnsafePointer(to: &address) { addressPointer in
+            addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                sendto(fd, rawBuffer.baseAddress, data.count, 0, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+    }
+    guard count == data.count else {
+        throw ProxyServerError.posix("sendto", errno)
+    }
+}
+
+private func recvUDPDatagram(from fd: Int32, timeoutMS: Int32) throws -> Data? {
+    var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    let pollResult = poll(&pollFD, 1, timeoutMS)
+    if pollResult < 0 {
+        throw ProxyServerError.posix("poll", errno)
+    }
+    guard pollResult > 0, (pollFD.revents & Int16(POLLIN)) != 0 else {
+        return nil
+    }
+
+    var buffer = [UInt8](repeating: 0, count: 65_535)
+    let count = buffer.withUnsafeMutableBytes { rawBuffer in
+        recv(fd, rawBuffer.baseAddress, rawBuffer.count, 0)
+    }
+    if count < 0 {
+        throw ProxyServerError.posix("recv", errno)
+    }
+    return Data(buffer.prefix(count))
 }
 
 private func makeTLSClientHello(serverName: String) -> Data {

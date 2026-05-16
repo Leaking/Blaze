@@ -1,13 +1,28 @@
 # Packet Tunnel Development Notes
 
-Blaze now includes a minimal Network Extension system extension scaffold:
+Blaze now includes a Network Extension system extension scaffold and an initial
+transparent IPv4 packet engine:
 
 - Host app bundle ID: `com.chenhuazhao.blaze`
 - System extension bundle ID: `com.chenhuazhao.blaze.tunnel`
 - Provider class: `PacketTunnelProvider`
 - Network Extension type: `packet-tunnel-provider-systemextension`
 
-The scaffold intentionally does not install a default route yet. Starting it should create a provider lifecycle without taking over system traffic. Full Surge-style takeover still needs packet routing, DNS handling, and TCP/UDP forwarding.
+The current tunnel installs a default IPv4 route. It supports transparent IPv4
+TCP via the local SOCKS5 listener, DNS A fake-IP synthesis with
+`198.18.0.0/15`, DNS over HTTPS fallback, AAAA suppression while IPv6
+forwarding is incomplete, TCP inbound reassembly, basic outbound ACK tracking
+and retransmission, idle flow cleanup, and a gated first-pass UDP relay path
+through local SOCKS5 UDP ASSOCIATE.
+
+Non-DNS UDP currently returns ICMP destination unreachable to make QUIC-capable
+clients fall back to TCP because `enableUDPRelay` is kept `false` in the host
+configuration. The UDP relay implementation can encapsulate IPv4 UDP payloads
+into local SOCKS5 UDP ASSOCIATE and write responses back as IPv4 UDP packets,
+but it should stay gated until upstream UDP support and route-aware fallback are
+complete. Full Surge-style parity still needs production UDP relay, complete
+IPv6 forwarding, richer connection lifecycle handling, and better runtime
+diagnostics.
 
 ## Local build
 
@@ -50,16 +65,38 @@ Entitlements/BlazeTunnelExtension.entitlements
 
 Ad-hoc signing is enough to verify the bundle layout and app UI, but macOS is expected to reject real Network Extension activation if the entitlement is not authorized by Apple.
 
-### Current personal account result
+### Developer ID notarization
 
-The personal development team `HYF3XBWBL2` can create the host app profile:
+Developer ID builds that contain a System Extension must be notarized before activation. The build script uses a secure timestamp automatically when `BLAZE_SIGN_IDENTITY` starts with `Developer ID Application:`.
+
+Create a notarytool keychain profile once:
+
+```bash
+xcrun notarytool store-credentials blaze-notary \
+  --apple-id "APPLE_ID_EMAIL" \
+  --team-id HYF3XBWBL2 \
+  --password "APP_SPECIFIC_PASSWORD"
+```
+
+Then notarize and staple the built app:
+
+```bash
+BLAZE_NOTARY_PROFILE=blaze-notary ./scripts/notarize-app.sh build/blaze.app
+```
+
+After notarization succeeds, install the stapled app to `/Applications` before clicking `Install Extension`.
+
+### Current signing result
+
+The team `HYF3XBWBL2` can create the host app profile:
 
 ```text
 Mac Team Provisioning Profile: com.chenhuazhao.blaze
 com.apple.developer.system-extension.install = true
 ```
 
-The same team currently generates the tunnel profile with ordinary Network Extension values only:
+The Mac Development tunnel profile currently contains ordinary Network
+Extension values only:
 
 ```text
 Mac Team Provisioning Profile: com.chenhuazhao.blaze.tunnel
@@ -75,7 +112,29 @@ com.apple.developer.networking.networkextension = [
 ]
 ```
 
-That is not enough for the `.systemextension` bundle used here. Signing a system extension with `packet-tunnel-provider` instead of `packet-tunnel-provider-systemextension` can produce an app bundle that passes `codesign --verify` but is rejected by macOS at launch/activation time. The build script therefore requires the exact `packet-tunnel-provider-systemextension` value before producing a restricted system-extension build.
+That is not enough for the `.systemextension` bundle used here. Signing a
+system extension with `packet-tunnel-provider` instead of
+`packet-tunnel-provider-systemextension` can produce an app bundle that passes
+`codesign --verify` but is rejected by macOS at launch/activation time. The
+build script therefore requires the exact
+`packet-tunnel-provider-systemextension` value before producing a restricted
+system-extension build.
+
+The Developer ID tunnel profile now contains:
+
+```text
+Blaze Tunnel Developer ID
+com.apple.developer.networking.networkextension = [
+  packet-tunnel-provider-systemextension,
+  app-proxy-provider-systemextension,
+  content-filter-provider-systemextension,
+  dns-proxy-systemextension,
+  dns-settings,
+  relay,
+  url-filter-provider,
+  hotspot-provider
+]
+```
 
 The local Mac registered for development is:
 
@@ -83,8 +142,6 @@ The local Mac registered for development is:
 Name: 陈华钊的Mac mini
 UUID: 091F172A-DF57-509D-B2A2-FFA9AC532ABD
 ```
-
-To continue with Surge-style enhanced mode, the developer team used for the tunnel bundle ID must be granted the `packet-tunnel-provider-systemextension` Network Extension entitlement by Apple. A standard `packet-tunnel-provider` profile is enough for an app-extension packet tunnel, but not for this System Extension path.
 
 ## Developer mode
 
@@ -105,4 +162,6 @@ Open Blaze Settings, then use the Packet Tunnel section:
 3. `Install Config`
 4. `Start Tunnel`
 
-The current provider is a lifecycle scaffold. It should not become the default route until packet forwarding is implemented.
+The current provider takes over IPv4 TCP and DNS. Keep Surge available while
+testing Blaze so Codex and ChatGPT connectivity can recover if a tunnel build
+regresses.

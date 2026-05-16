@@ -2937,7 +2937,7 @@ struct SettingsView: View {
                     CompatibilityRow(name: "Host entitlement", value: store.packetTunnelHostEntitlementText)
                     CompatibilityRow(name: "Status", value: store.packetTunnelStatusText)
                     CompatibilityRow(name: "Bypass", value: store.packetTunnelExcludedIPv4Summary)
-                    CompatibilityRow(name: "Mode", value: "Transparent IPv4 TCP via local SOCKS5; DNS over HTTPS; AAAA suppressed until IPv6 forwarding lands")
+                    CompatibilityRow(name: "Mode", value: "Transparent IPv4 TCP via local SOCKS5; DNS fake-IP; UDP relay gated; AAAA suppressed until IPv6 forwarding lands")
                 }
             }
 

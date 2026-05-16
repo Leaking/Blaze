@@ -34,6 +34,16 @@ find_signing_identity() {
     security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:.*\)"/\1/p' | head -n 1
 }
 
+codesign_timestamp_args() {
+    local identity="$1"
+
+    if [[ "$identity" == Developer\ ID\ Application:* ]]; then
+        printf '%s\n' "--timestamp"
+    else
+        printf '%s\n' "--timestamp=none"
+    fi
+}
+
 profile_files() {
     find "$HOME/Library/MobileDevice/Provisioning Profiles" \
         "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles" \
@@ -235,6 +245,7 @@ if [[ "$ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS" == "1" ]]; then
     TUNNEL_PROVISIONING_PROFILE="$(select_profile "$TUNNEL_PROVISIONING_PROFILE" "$TUNNEL_BUNDLE_ID" "com.apple.developer.networking.networkextension" "packet-tunnel-provider-systemextension")"
     cp "$APP_PROVISIONING_PROFILE" "$CONTENTS_DIR/embedded.provisionprofile"
     cp "$TUNNEL_PROVISIONING_PROFILE" "$TUNNEL_CONTENTS_DIR/embedded.provisionprofile"
+    xattr -cr "$APP_DIR" 2>/dev/null || true
 
     GENERATED_ENTITLEMENTS_DIR="$BUILD_DIR/generated-entitlements"
     mkdir -p "$GENERATED_ENTITLEMENTS_DIR"
@@ -243,8 +254,13 @@ if [[ "$ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS" == "1" ]]; then
     write_entitlements_from_profile "$APP_PROVISIONING_PROFILE" "$GENERATED_APP_ENTITLEMENTS"
     write_entitlements_from_profile "$TUNNEL_PROVISIONING_PROFILE" "$GENERATED_TUNNEL_ENTITLEMENTS"
 
-    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_TUNNEL_ENTITLEMENTS" "$TUNNEL_EXTENSION_DIR" >/dev/null
-    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_APP_ENTITLEMENTS" "$APP_DIR" >/dev/null
+    CODESIGN_TIMESTAMP_ARGS=()
+    while IFS= read -r arg; do
+        [[ -n "$arg" ]] && CODESIGN_TIMESTAMP_ARGS+=("$arg")
+    done < <(codesign_timestamp_args "$SIGN_IDENTITY")
+
+    codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_TUNNEL_ENTITLEMENTS" "$TUNNEL_EXTENSION_DIR" >/dev/null
+    codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_APP_ENTITLEMENTS" "$APP_DIR" >/dev/null
 else
     codesign --force --sign "$SIGN_IDENTITY" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
@@ -255,6 +271,7 @@ if [[ "${1:-}" == "--install" ]]; then
     rm -rf "/Applications/$APP_NAME.app"
     rm -rf "/Applications/ProxyWorkbench.app"
     cp -R "$APP_DIR" "/Applications/$APP_NAME.app"
+    xattr -cr "/Applications/$APP_NAME.app" 2>/dev/null || true
     echo "Installed /Applications/$APP_NAME.app"
 else
     echo "Built $APP_DIR"
