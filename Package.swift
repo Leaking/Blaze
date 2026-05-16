@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "ProxyWorkbenchCore", targets: ["ProxyWorkbenchCore"]),
-        .executable(name: "blaze", targets: ["blaze"])
+        .executable(name: "blaze", targets: ["blaze"]),
+        .executable(name: "BlazeTunnelExtension", targets: ["BlazeTunnelExtension"])
     ],
     dependencies: [],
     targets: [
@@ -21,6 +22,14 @@ let package = Package(
             name: "blaze",
             dependencies: ["ProxyWorkbenchCore"],
             path: "Sources/ProxyWorkbench"
+        ),
+        .executableTarget(
+            name: "BlazeTunnelExtension",
+            path: "Sources/BlazeTunnelExtension",
+            linkerSettings: [
+                .linkedFramework("CFNetwork"),
+                .linkedFramework("NetworkExtension")
+            ]
         ),
         .testTarget(
             name: "ProxyWorkbenchCoreTests",

@@ -35,6 +35,9 @@ struct ProxyTunnelSummary: Sendable {
     var downloadError: String?
 
     var status: String {
+        if uploadBytes == 0 && downloadBytes == 0 {
+            return "Cancelled"
+        }
         if downloadBytes == 0 {
             return "Failed"
         }
@@ -51,7 +54,9 @@ struct ProxyTunnelSummary: Sendable {
         if let downloadError {
             parts.append("download \(downloadError)")
         }
-        if downloadBytes == 0 {
+        if uploadBytes == 0 && downloadBytes == 0 {
+            parts.append("no client payload received")
+        } else if downloadBytes == 0 {
             parts.append("no upstream response bytes")
         }
         return parts.joined(separator: "; ")

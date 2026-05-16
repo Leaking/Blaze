@@ -419,6 +419,19 @@ final class LocalHTTPProxyServerTests: XCTestCase {
         XCTAssertEqual(parsed.payload, Data("GET / HTTP/1.1\r\n\r\n".utf8))
     }
 
+    func testTLSClientHelloInspectorExtractsServerName() throws {
+        let clientHello = makeTLSClientHello(serverName: "www.google.com")
+
+        XCTAssertEqual(TLSClientHelloInspector.serverName(in: clientHello), "www.google.com")
+    }
+
+    func testFakeIPInspectorDetects19818Range() throws {
+        XCTAssertTrue(ProxyIPv4AddressInspector.isFakeIP("198.18.1.87"))
+        XCTAssertTrue(ProxyIPv4AddressInspector.isFakeIP("198.19.255.255"))
+        XCTAssertFalse(ProxyIPv4AddressInspector.isFakeIP("198.20.0.1"))
+        XCTAssertFalse(ProxyIPv4AddressInspector.isFakeIP("www.google.com"))
+    }
+
     func testLocalSOCKS5ListenerConnectsDirect() async throws {
         let origin = try TinyHTTPServer(responseBody: "socks-listener-ok")
         defer { origin.stop() }
@@ -469,9 +482,9 @@ final class LocalHTTPProxyServerTests: XCTestCase {
 
         try? await Task.sleep(nanoseconds: 150_000_000)
         let events = await logStore.events()
-        XCTAssertEqual(events.first?.method, "SOCKS5")
-        XCTAssertEqual(events.first?.policy, "DIRECT")
-        XCTAssertEqual(events.first?.status, "Connected")
+        let connectedEvent = events.first { $0.status == "Connected" }
+        XCTAssertEqual(connectedEvent?.method, "SOCKS5")
+        XCTAssertEqual(connectedEvent?.policy, "DIRECT")
     }
 
     func testSelectedGroupPolicyOverridesDefaultMember() async throws {
@@ -880,4 +893,42 @@ private func readHeaderOnly(from fd: Int32) -> String {
         if data.range(of: terminator) != nil { break }
     }
     return String(data: data, encoding: .utf8) ?? ""
+}
+
+private func makeTLSClientHello(serverName: String) -> Data {
+    let serverNameData = Data(serverName.utf8)
+    var serverNameExtension = Data()
+    serverNameExtension.append(contentsOf: [0x00, UInt8(serverNameData.count + 3)])
+    serverNameExtension.append(0x00)
+    serverNameExtension.append(UInt8((serverNameData.count >> 8) & 0xFF))
+    serverNameExtension.append(UInt8(serverNameData.count & 0xFF))
+    serverNameExtension.append(serverNameData)
+
+    var extensions = Data()
+    extensions.append(contentsOf: [0x00, 0x00])
+    extensions.append(UInt8((serverNameExtension.count >> 8) & 0xFF))
+    extensions.append(UInt8(serverNameExtension.count & 0xFF))
+    extensions.append(serverNameExtension)
+
+    var handshakeBody = Data()
+    handshakeBody.append(contentsOf: [0x03, 0x03])
+    handshakeBody.append(Data(repeating: 0x11, count: 32))
+    handshakeBody.append(0x00)
+    handshakeBody.append(contentsOf: [0x00, 0x02, 0x13, 0x01])
+    handshakeBody.append(contentsOf: [0x01, 0x00])
+    handshakeBody.append(UInt8((extensions.count >> 8) & 0xFF))
+    handshakeBody.append(UInt8(extensions.count & 0xFF))
+    handshakeBody.append(extensions)
+
+    var handshake = Data([0x01])
+    handshake.append(UInt8((handshakeBody.count >> 16) & 0xFF))
+    handshake.append(UInt8((handshakeBody.count >> 8) & 0xFF))
+    handshake.append(UInt8(handshakeBody.count & 0xFF))
+    handshake.append(handshakeBody)
+
+    var record = Data([0x16, 0x03, 0x01])
+    record.append(UInt8((handshake.count >> 8) & 0xFF))
+    record.append(UInt8(handshake.count & 0xFF))
+    record.append(handshake)
+    return record
 }

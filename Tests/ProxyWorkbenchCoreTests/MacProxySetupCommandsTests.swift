@@ -137,4 +137,45 @@ final class MacProxySetupCommandsTests: XCTestCase {
         XCTAssertEqual(decoded, status)
         XCTAssertEqual(decoded.restoreInvocations(networkService: "Wi-Fi").count, 6)
     }
+
+    func testEffectiveProxyStatusParsesScutilOutputAndDetectsElsewhere() {
+        let output = """
+        <dictionary> {
+          HTTPEnable : 1
+          HTTPPort : 6152
+          HTTPProxy : 127.0.0.1
+          HTTPSEnable : 1
+          HTTPSPort : 6152
+          HTTPSProxy : 127.0.0.1
+          SOCKSEnable : 1
+          SOCKSPort : 6153
+          SOCKSProxy : 127.0.0.1
+        }
+        """
+
+        let status = MacEffectiveProxyStatus.parseScutilProxy(output, expectedHTTPPort: 19080, expectedSOCKSPort: 19081)
+
+        XCTAssertFalse(status.matchesBlaze)
+        XCTAssertTrue(status.anyProxyEnabled)
+        XCTAssertEqual(status.summary, "Elsewhere: HTTP 127.0.0.1:6152, HTTPS 127.0.0.1:6152, SOCKS5 127.0.0.1:6153")
+    }
+
+    func testEffectiveProxyStatusDetectsBlaze() {
+        let output = """
+        HTTPEnable : 1
+        HTTPPort : 19080
+        HTTPProxy : 127.0.0.1
+        HTTPSEnable : 1
+        HTTPSPort : 19080
+        HTTPSProxy : 127.0.0.1
+        SOCKSEnable : 1
+        SOCKSPort : 19081
+        SOCKSProxy : 127.0.0.1
+        """
+
+        let status = MacEffectiveProxyStatus.parseScutilProxy(output, expectedHTTPPort: 19080, expectedSOCKSPort: 19081)
+
+        XCTAssertTrue(status.matchesBlaze)
+        XCTAssertEqual(status.summary, "Blaze: HTTP 19080, SOCKS5 19081")
+    }
 }

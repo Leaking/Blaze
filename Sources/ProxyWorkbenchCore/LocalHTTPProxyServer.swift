@@ -277,14 +277,21 @@ public actor LocalHTTPProxyServer {
             let header = try readHeader(from: clientFD)
             let request = try HTTPProxyRequest(headerText: header.headerText)
 
-            let destination: Destination
+            var destination: Destination
             let initialPayload: Data?
+            var recoveredPlainHTTPFakeIPNote: String?
             if request.method.uppercased() == "CONNECT" {
                 destination = try Destination(authority: request.target, defaultPort: 443)
                 initialPayload = nil
             } else {
                 destination = try request.destinationForPlainHTTP()
                 initialPayload = request.rewrittenHeader(for: destination).data(using: .utf8)! + header.extraData
+                if destination.isFakeIP,
+                   let recoveredHost = request.recoverableHostHeader(),
+                   let recoveredDestination = try? Destination(host: recoveredHost, port: destination.port) {
+                    recoveredPlainHTTPFakeIPNote = "; fake-IP \(destination.host) recovered HTTP Host \(recoveredHost)"
+                    destination = recoveredDestination
+                }
             }
 
             failureContext.method = request.method
@@ -332,7 +339,7 @@ public actor LocalHTTPProxyServer {
                 return
 
             case .direct:
-                let remoteFD = try connect(host: destination.host, port: destination.port)
+                let remoteFD = try await DirectSocketConnector.connect(host: destination.host, port: destination.port)
                 let connectedNote = route.note + "; " + (request.method.uppercased() == "CONNECT" ? "CONNECT tunnel" : "HTTP forward")
                 await logStore.append(
                     ProxyServerEvent(
@@ -361,7 +368,7 @@ public actor LocalHTTPProxyServer {
                 guard let upstreamPort = upstream.port else {
                     throw ProxyServerError.invalidDestination
                 }
-                let remoteFD = try connect(host: upstream.host, port: upstreamPort)
+                let remoteFD = try await DirectSocketConnector.connect(host: upstream.host, port: upstreamPort)
                 let connectedNote = route.note + "; HTTP upstream \(upstream.endpoint)"
                 await logStore.append(
                     ProxyServerEvent(
@@ -390,7 +397,7 @@ public actor LocalHTTPProxyServer {
                 guard let upstreamPort = upstream.port else {
                     throw ProxyServerError.invalidDestination
                 }
-                let remoteFD = try connect(host: upstream.host, port: upstreamPort)
+                let remoteFD = try await DirectSocketConnector.connect(host: upstream.host, port: upstreamPort)
                 try connectViaSOCKS5(remoteFD, destination: destination, upstream: upstream)
                 let connectedNote = route.note + "; SOCKS5 upstream \(upstream.endpoint)"
                 await logStore.append(
@@ -417,8 +424,113 @@ public actor LocalHTTPProxyServer {
                 return
 
             case .trojanProxy(let upstream):
+                if request.method.uppercased() == "CONNECT", destination.isFakeIP {
+                    try sendAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: blaze\r\n\r\n", to: clientFD)
+
+                    var clientInitialPayload = header.extraData
+                    if TLSClientHelloInspector.serverName(in: clientInitialPayload) == nil,
+                       TLSClientHelloInspector.isPotentialClientHello(clientInitialPayload) {
+                        clientInitialPayload.append(try ProxyInitialPayloadReader.read(from: clientFD))
+                    }
+
+                    let recoveredHost = TLSClientHelloInspector.serverName(in: clientInitialPayload)
+                    let payloadDiagnostic = ProxyInitialPayloadDiagnostics.summary(for: clientInitialPayload)
+                    if recoveredHost == nil,
+                       let fallbackFD = try? connectViaForeignFakeIPSocks(destination: destination) {
+                        let connectedNote = route.note
+                            + "; foreign fake-IP fallback 127.0.0.1:6153"
+                            + "; fake-IP \(destination.host) SNI unavailable"
+                            + "; \(payloadDiagnostic)"
+                        await logStore.append(
+                            ProxyServerEvent(
+                                method: request.method,
+                                target: request.target,
+                                host: destination.host,
+                                port: destination.port,
+                                policy: route.policy,
+                                status: "Connected",
+                                rule: route.rule,
+                                note: connectedNote
+                            )
+                        )
+
+                        if !clientInitialPayload.isEmpty {
+                            try sendAll(clientInitialPayload, to: fallbackFD)
+                        }
+
+                        let summary = await tunnel(clientFD, fallbackFD)
+                        await appendTunnelSummary(summary, request: request, destination: destination, route: route, note: connectedNote, to: logStore)
+                        return
+                    }
+
+                    if recoveredHost == nil {
+                        let failedNote = route.note
+                            + "; fake-IP \(destination.host) SNI unavailable"
+                            + "; \(payloadDiagnostic)"
+                            + "; foreign fake-IP fallback unavailable; close unresolved fake-IP"
+                        await logStore.append(
+                            ProxyServerEvent(
+                                method: request.method,
+                                target: request.target,
+                                host: destination.host,
+                                port: destination.port,
+                                policy: route.policy,
+                                status: "Failed",
+                                rule: route.rule,
+                                note: failedNote
+                            )
+                        )
+                        close(clientFD)
+                        return
+                    }
+
+                    let upstreamDestination = try Destination(host: recoveredHost!, port: destination.port)
+                    let connection = try await TrojanUpstreamConnection.connect(upstream: upstream, destinationHost: upstreamDestination.host, destinationPort: upstreamDestination.port)
+                    let recoveredNote = "; fake-IP \(destination.host) recovered SNI \(recoveredHost!)"
+                    let connectedNote = route.note + "; Trojan upstream \(connection.endpointDescription):\(upstream.port ?? 0)" + recoveredNote
+                    await logStore.append(
+                        ProxyServerEvent(
+                            method: request.method,
+                            target: request.target,
+                            host: upstreamDestination.host,
+                            port: upstreamDestination.port,
+                            policy: route.policy,
+                            status: "Connected",
+                            rule: route.rule,
+                            note: connectedNote
+                        )
+                    )
+
+                    if !clientInitialPayload.isEmpty {
+                        try await connection.send(clientInitialPayload)
+                    }
+
+                    let summary = await TrojanUpstreamConnection.tunnel(clientFD: clientFD, upstream: connection)
+                    await appendTunnelSummary(summary, request: request, destination: upstreamDestination, route: route, note: connectedNote, to: logStore)
+                    return
+                }
+
+                if destination.isFakeIP {
+                    let failedNote = route.note
+                        + "; fake-IP \(destination.host) has no recoverable HTTP Host/SNI; close unresolved fake-IP"
+                    await logStore.append(
+                        ProxyServerEvent(
+                            method: request.method,
+                            target: request.target,
+                            host: destination.host,
+                            port: destination.port,
+                            policy: route.policy,
+                            status: "Failed",
+                            rule: route.rule,
+                            note: failedNote
+                        )
+                    )
+                    close(clientFD)
+                    return
+                }
+
                 let connection = try await TrojanUpstreamConnection.connect(upstream: upstream, destinationHost: destination.host, destinationPort: destination.port)
-                let connectedNote = route.note + "; Trojan upstream \(upstream.endpoint)"
+                let connectedNote = route.note + "; Trojan upstream \(connection.endpointDescription):\(upstream.port ?? 0)" + (recoveredPlainHTTPFakeIPNote ?? "")
                 await logStore.append(
                     ProxyServerEvent(
                         method: request.method,
@@ -457,7 +569,8 @@ public actor LocalHTTPProxyServer {
         note: String,
         to logStore: ProxyEventStore
     ) async {
-        guard summary.status == "Failed" else { return }
+        guard summary.status != "Cancelled" else { return }
+        guard request.method.uppercased() == "CONNECT" || summary.status == "Failed" else { return }
         await logStore.append(
             ProxyServerEvent(
                 method: request.method,
@@ -579,7 +692,11 @@ public actor LocalHTTPProxyServer {
         while let address = current {
             let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
             if fd >= 0 {
-                ProxySocketOptions.prepare(fd)
+                if let socketAddress = address.pointee.ai_addr {
+                    ProxySocketOptions.prepareOutbound(fd, destination: socketAddress)
+                } else {
+                    ProxySocketOptions.prepare(fd)
+                }
                 if Darwin.connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 {
                     return fd
                 }
@@ -590,6 +707,31 @@ public actor LocalHTTPProxyServer {
         }
 
         throw ProxyServerError.posix("connect", savedErrno)
+    }
+
+    private static func connectViaForeignFakeIPSocks(destination: Destination) throws -> Int32 {
+        let fd = try connect(host: "127.0.0.1", port: 6153)
+        do {
+            try connectViaSOCKS5(fd, destination: destination, upstream: foreignFakeIPSocksFallback)
+            return fd
+        } catch {
+            close(fd)
+            throw error
+        }
+    }
+
+    private static var foreignFakeIPSocksFallback: ProxyNode {
+        ProxyNode(
+            name: "Foreign fake-IP SOCKS",
+            kind: .socks5,
+            rawKind: "socks5",
+            host: "127.0.0.1",
+            port: 6153,
+            username: nil,
+            password: nil,
+            parameters: [:],
+            sourceLine: -1
+        )
     }
 
     private static func connectViaSOCKS5(_ fd: Int32, destination: Destination, upstream: ProxyNode) throws {
@@ -773,6 +915,14 @@ private struct Destination: Sendable {
     var host: String
     var port: Int
 
+    init(host: String, port: Int) throws {
+        guard !host.isEmpty, (1...65535).contains(port) else {
+            throw ProxyServerError.invalidDestination
+        }
+        self.host = host
+        self.port = port
+    }
+
     init(authority: String, defaultPort: Int) throws {
         let trimmed = authority.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("["),
@@ -795,6 +945,10 @@ private struct Destination: Sendable {
         if host.isEmpty || !(1...65535).contains(port) {
             throw ProxyServerError.invalidDestination
         }
+    }
+
+    var isFakeIP: Bool {
+        ProxyIPv4AddressInspector.isFakeIP(host)
     }
 }
 
@@ -921,6 +1075,10 @@ private struct HTTPProxyRequest: Sendable {
 
     private func headerValue(_ name: String) -> String? {
         headers.first { $0.0.lowercased() == name.lowercased() }?.1
+    }
+
+    func recoverableHostHeader() -> String? {
+        headerValue("host").flatMap(HTTPHostHeaderInspector.host(inHeaderValue:))
     }
 
     private func originPath() -> String {

@@ -4,6 +4,7 @@ import SwiftUI
 
 @main
 struct BlazeApp: App {
+    @NSApplicationDelegateAdaptor(BlazeAppDelegate.self) private var appDelegate
     @StateObject private var store = WorkbenchStore()
 
     init() {
@@ -17,6 +18,7 @@ struct BlazeApp: App {
                 .tint(.indigo)
                 .frame(minWidth: 1080, minHeight: 720)
                 .task {
+                    appDelegate.store = store
                     store.loadInitialProfile()
                 }
         }
@@ -28,11 +30,53 @@ struct BlazeApp: App {
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             }
+            CommandMenu("Proxy") {
+                Button("Start Local Listeners") {
+                    Task { await store.startLocalProxyStack() }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Button("Stop Local Listeners") {
+                    Task {
+                        await store.stopLocalProxyServer()
+                        await store.stopLocalSocksServer()
+                    }
+                }
+                .disabled(!store.localProxyRunning)
+
+                Divider()
+
+                Button("Start Proxy and Apply System Proxy") {
+                    Task { await store.startAndApplySystemProxy() }
+                }
+
+                Button("Stop Proxy and Restore System Proxy") {
+                    Task { await store.disableSystemProxyAndStop() }
+                }
+
+                Divider()
+
+                Button("Install Packet Tunnel Extension") {
+                    store.activatePacketTunnelSystemExtension()
+                }
+
+                Button("Install Packet Tunnel Config") {
+                    Task { await store.installPacketTunnelConfiguration() }
+                }
+
+                Button("Start Packet Tunnel") {
+                    Task { await store.startPacketTunnel() }
+                }
+
+                Button("Stop Packet Tunnel") {
+                    Task { await store.stopPacketTunnel() }
+                }
+            }
         }
 
         MenuBarExtra {
             VStack(alignment: .leading) {
-                Text(store.localProxyRunning ? "blaze: Connected" : "blaze: Disconnected")
+                Text(store.browserTrafficShouldReachBlaze ? "blaze: Connected" : "blaze: Not Effective")
                 Text(store.activeRoutingSummary)
                 Text("HTTP \(store.proxyListenPort) / SOCKS5 \(store.socksListenPort)")
             }
@@ -46,12 +90,17 @@ struct BlazeApp: App {
             Button("Connect") {
                 Task { await store.startAndApplySystemProxy() }
             }
+            .disabled(store.browserTrafficShouldReachBlaze)
+
+            Button("Start Local Listeners") {
+                Task { await store.startLocalProxyStack() }
+            }
             .disabled(store.localProxyRunning)
 
             Button("Disconnect") {
                 Task { await store.disableSystemProxyAndStop() }
             }
-            .disabled(!store.localProxyRunning)
+            .disabled(!store.localProxyRunning && !store.effectiveProxyStatus.anyProxyEnabled)
 
             Divider()
 
@@ -83,7 +132,7 @@ struct BlazeApp: App {
                 NSApplication.shared.terminate(nil)
             }
         } label: {
-            Label("blaze", systemImage: store.localProxyRunning ? "triangle.inset.filled" : "network")
+            Label("blaze", systemImage: store.effectiveSystemProxyIsBlaze ? "triangle.inset.filled" : "network")
         }
     }
 
@@ -92,5 +141,17 @@ struct BlazeApp: App {
         for window in NSApplication.shared.windows where window.canBecomeMain {
             window.makeKeyAndOrderFront(nil)
         }
+    }
+}
+
+final class BlazeAppDelegate: NSObject, NSApplicationDelegate {
+    weak var store: WorkbenchStore?
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        store?.restoreSystemProxyForTermination()
     }
 }

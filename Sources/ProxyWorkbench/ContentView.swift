@@ -396,8 +396,8 @@ struct OverviewView: View {
                 }
                 OverviewStatusCard(
                     title: "System Proxy",
-                    value: store.systemProxyStatus.activation == .active ? "blaze" : store.systemProxyStatus.activation.rawValue,
-                    caption: store.systemProxyStatus.summary,
+                    value: store.packetTunnelConnected ? "Tunnel" : (store.effectiveSystemProxyIsBlaze ? "blaze" : (store.effectiveProxyStatus.anyProxyEnabled ? "Elsewhere" : store.systemProxyStatus.activation.rawValue)),
+                    caption: store.packetTunnelConnected ? store.packetTunnelStatusText : store.effectiveSystemProxySummary,
                     systemImage: "shield.lefthalf.filled",
                     color: systemProxyColor
                 )
@@ -450,7 +450,7 @@ struct OverviewView: View {
     }
 
     private var overviewSubtitle: String {
-        if store.localProxyRunning && store.systemProxyStatus.activation == .active {
+        if store.localProxyRunning && store.browserTrafficShouldReachBlaze {
             return "All systems operational"
         }
         if store.profile.proxies.isEmpty && store.profile.rules.isEmpty {
@@ -460,12 +460,13 @@ struct OverviewView: View {
     }
 
     private var systemProxyColor: Color {
-        switch store.systemProxyStatus.activation {
-        case .active:
+        if store.browserTrafficShouldReachBlaze {
             return .green
+        }
+        switch store.systemProxyStatus.activation {
         case .partial:
             return .orange
-        case .inactive, .unknown:
+        case .active, .inactive, .unknown:
             return .secondary
         }
     }
@@ -759,8 +760,8 @@ struct SidebarStatusCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 SidebarStatusLine(
                     title: "System Proxy",
-                    value: store.systemProxyStatus.activation == .active ? "Active" : store.systemProxyStatus.activation.rawValue,
-                    isOn: store.systemProxyStatus.activation == .active
+                    value: store.packetTunnelConnected ? "Tunnel" : (store.effectiveSystemProxyIsBlaze ? "Active" : (store.effectiveProxyStatus.anyProxyEnabled ? "Elsewhere" : store.systemProxyStatus.activation.rawValue)),
+                    isOn: store.browserTrafficShouldReachBlaze
                 )
                 SidebarStatusLine(title: "Local Proxy", value: store.localProxyRunning ? "On" : "Off", isOn: store.localProxyRunning)
             }
@@ -2616,11 +2617,22 @@ struct TestsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.connectivityTestRunning)
+
+                Button {
+                    Task { await store.openBlazeTestBrowser() }
+                } label: {
+                    Label("Open Test Browser", systemImage: "safari")
+                }
             }
 
             SectionPanel(title: "Current State", icon: "switch.2") {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    CompactStat(title: "System Proxy", value: store.systemProxyStatus.summary, icon: "desktopcomputer")
+                    CompactStat(title: "Browser Route", value: browserRouteSummary, icon: "safari")
+                    CompactStat(title: "Routing", value: store.activeRoutingSummary, icon: "point.topleft.down.curvedto.point.bottomright.up")
+                    CompactStat(title: "Rule Cache", value: "\(store.importedRuleSetRuleCount)", icon: "tray.and.arrow.down")
+                    CompactStat(title: "Effective Proxy", value: store.effectiveProxyStatus.summary, icon: "point.3.connected.trianglepath.dotted")
+                    CompactStat(title: "Configured Proxy", value: store.systemProxyStatus.summary, icon: "desktopcomputer")
+                    CompactStat(title: "Packet Tunnel", value: store.packetTunnelStatusText, icon: "shield.lefthalf.filled")
                     CompactStat(title: "Local Proxy", value: store.localProxySummary, icon: "point.3.connected.trianglepath.dotted")
                     CompactStat(title: "HTTP", value: "127.0.0.1:\(store.proxyListenPort)", icon: "network")
                     CompactStat(title: "SOCKS5", value: "127.0.0.1:\(store.socksListenPort)", icon: "point.3.connected.trianglepath.dotted")
@@ -2646,12 +2658,25 @@ struct TestsView: View {
 
     private var testsSubtitle: String {
         if store.connectivityTestRunning {
-            return "Running Google, Baidu, DNS, and local listener checks"
+            return "Running route, Google, Baidu, ChatGPT, DNS, and local listener checks"
         }
         if store.connectivityTestResults.isEmpty {
-            return "Google, Baidu, DNS, HTTP, and SOCKS5 checks"
+            return "Route, Google, Baidu, ChatGPT, DNS, HTTP, and SOCKS5 checks"
         }
         return failureCount == 0 ? "All recent checks passed" : "\(failureCount) recent check\(failureCount == 1 ? "" : "s") failed"
+    }
+
+    private var browserRouteSummary: String {
+        if store.packetTunnelConnected {
+            return "Packet Tunnel"
+        }
+        if store.effectiveSystemProxyIsBlaze {
+            return "Blaze Proxy"
+        }
+        if store.effectiveProxyStatus.anyProxyEnabled {
+            return "Elsewhere"
+        }
+        return "Off"
     }
 }
 
@@ -2867,7 +2892,52 @@ struct SettingsView: View {
                         }
                     }
                     CompatibilityRow(name: "System proxy", value: store.systemProxyStatus.summary)
+                    CompatibilityRow(name: "Effective proxy", value: store.effectiveSystemProxySummary)
                     CompatibilityRow(name: "Restore point", value: store.systemProxyRestoreSummary)
+                }
+            }
+
+            SectionPanel(title: "Packet Tunnel", icon: "shield.lefthalf.filled") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Button {
+                            store.activatePacketTunnelSystemExtension()
+                        } label: {
+                            Label("Install Extension", systemImage: "puzzlepiece.extension")
+                        }
+                        Button(role: .destructive) {
+                            store.deactivatePacketTunnelSystemExtension()
+                        } label: {
+                            Label("Remove Extension", systemImage: "minus.circle")
+                        }
+                        Spacer()
+                        Button {
+                            Task { await store.installPacketTunnelConfiguration() }
+                        } label: {
+                            Label("Install Config", systemImage: "gearshape")
+                        }
+                        Button {
+                            Task { await store.startPacketTunnel() }
+                        } label: {
+                            Label("Start Tunnel", systemImage: "play.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
+                            Task { await store.stopPacketTunnel() }
+                        } label: {
+                            Label("Stop Tunnel", systemImage: "stop.circle")
+                        }
+                        Button {
+                            Task { await store.refreshPacketTunnelStatus() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    CompatibilityRow(name: "Extension ID", value: SystemExtensionController.extensionIdentifier)
+                    CompatibilityRow(name: "Host entitlement", value: store.packetTunnelHostEntitlementText)
+                    CompatibilityRow(name: "Status", value: store.packetTunnelStatusText)
+                    CompatibilityRow(name: "Bypass", value: store.packetTunnelExcludedIPv4Summary)
+                    CompatibilityRow(name: "Mode", value: "Transparent IPv4 TCP via local SOCKS5; DNS over HTTPS; AAAA suppressed until IPv6 forwarding lands")
                 }
             }
 

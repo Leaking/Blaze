@@ -1,4 +1,5 @@
 import AppKit
+import CFNetwork
 import Darwin
 import Foundation
 import ProxyWorkbenchCore
@@ -74,6 +75,7 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var networkServiceDetectionInProgress = false
     @Published private(set) var systemProxyStatusInProgress = false
     @Published private(set) var systemProxyStatus: MacSystemProxyStatus = .unknown(expectedHTTPPort: 19080, expectedSOCKSPort: 19081)
+    @Published private(set) var effectiveProxyStatus: MacEffectiveProxyStatus = .unknown(expectedHTTPPort: 19080, expectedSOCKSPort: 19081)
     @Published private(set) var systemProxyApplyInProgress = false
     @Published private(set) var systemProxyRestorePoint: MacSystemProxyStatus?
     @Published private(set) var proxyRoutingMode: ProxyRoutingMode = .ruleBased
@@ -86,8 +88,14 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var favoriteProxyNames: Set<String> = []
     @Published private(set) var connectivityTestRunning = false
     @Published private(set) var connectivityTestResults: [ConnectivityTestResult] = []
+    @Published private(set) var packetTunnelStatusText = "System extension not installed"
+    @Published private(set) var packetTunnelConnected = false
+    @Published private(set) var packetTunnelTransitioning = false
+    @Published private(set) var packetTunnelHostEntitlementText = SystemExtensionController.hostEntitlementStatusText
+    @Published private(set) var packetTunnelExcludedIPv4Summary = "Not computed"
 
     private let probe = LatencyProbe()
+    private let systemExtensionController = SystemExtensionController()
     private var proxyLogStore = ProxyEventStore(diskLogURL: ProxyEventStore.defaultDiskLogURL())
     private var proxyServer: LocalHTTPProxyServer?
     private var socksServer: LocalSOCKS5ProxyServer?
@@ -97,6 +105,10 @@ final class WorkbenchStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        systemExtensionController.statusHandler = { [weak self] message in
+            self?.packetTunnelStatusText = message
+            self?.statusText = message
+        }
     }
 
     var localProxySummary: String {
@@ -110,6 +122,18 @@ final class WorkbenchStore: ObservableObject {
 
     var localProxyRunning: Bool {
         proxyServerRunning || socksServerRunning
+    }
+
+    var effectiveSystemProxySummary: String {
+        effectiveProxyStatus.summary
+    }
+
+    var effectiveSystemProxyIsBlaze: Bool {
+        effectiveProxyStatus.matchesBlaze
+    }
+
+    var browserTrafficShouldReachBlaze: Bool {
+        effectiveProxyStatus.matchesBlaze || packetTunnelConnected
     }
 
     var systemProxyRestoreSummary: String {
@@ -192,6 +216,7 @@ final class WorkbenchStore: ObservableObject {
         if let savedSource = defaults.string(forKey: PersistenceKey.sourceText), !savedSource.isEmpty {
             sourceText = savedSource
             parseSource(persist: false)
+            restoreRuleSetCache()
             statusText = "Restored saved profile"
         } else {
             profile = .empty
@@ -200,8 +225,34 @@ final class WorkbenchStore: ObservableObject {
             statusText = "Paste a profile URL or import a local profile to begin"
         }
 
+        let hasSavedNetworkService = (defaults.string(forKey: PersistenceKey.networkServiceName)?.isEmpty == false)
+
         Task {
+            if !hasSavedNetworkService {
+                await detectAndAdoptDefaultNetworkService()
+            }
             await refreshSystemProxyStatus()
+            await refreshPacketTunnelStatus(updateStatusText: false)
+            if systemProxyStatus.activation == .active {
+                await startLocalProxyStack()
+            }
+            if !profile.rules.filter({ $0.type == "RULE-SET" }).isEmpty, importedRuleSetRuleCount == 0 {
+                await importRuleSets()
+            }
+        }
+    }
+
+    private func detectAndAdoptDefaultNetworkService() async {
+        do {
+            let output = try await Self.networkServiceListOutput()
+            let services = MacNetworkServiceList.parse(output)
+            detectedNetworkServices = services
+            if !services.isEmpty, !services.contains(networkServiceName), let first = services.first {
+                networkServiceName = first
+                defaults.set(first, forKey: PersistenceKey.networkServiceName)
+            }
+        } catch {
+            // Detection is best-effort; the user can still set it manually.
         }
     }
 
@@ -492,6 +543,7 @@ final class WorkbenchStore: ObservableObject {
 
         ruleSetRulesByURL = imported
         ruleSetStatusByURL = statuses
+        persistRuleSetCache()
         runRuleProbe()
         return importedRuleSetRuleCount
     }
@@ -543,12 +595,34 @@ final class WorkbenchStore: ObservableObject {
         statusText = "Copied macOS proxy disable commands"
     }
 
+    func openBlazeTestBrowser() async {
+        await startLocalProxyStack()
+        guard proxyServerRunning && socksServerRunning else {
+            statusText = "Test browser failed: local HTTP/SOCKS5 listeners are not running"
+            return
+        }
+
+        do {
+            try await Self.openChromeTestBrowser(httpPort: proxyListenPort, socksPort: socksListenPort)
+            statusText = "Opened Chrome test profile through blaze HTTP \(proxyListenPort), SOCKS5 \(socksListenPort)"
+        } catch {
+            statusText = "Test browser failed: \(error)"
+        }
+    }
+
     func applySystemProxySettings() async {
         await captureSystemProxyRestorePointIfNeeded()
-        await runSystemProxyCommands(
+        let applied = await runSystemProxyCommands(
             commands: MacProxySetupCommands(networkService: networkServiceName, httpPort: proxyListenPort, socksPort: socksListenPort).enableInvocations,
             successStatus: "Applied macOS proxy settings for \(networkServiceName)"
         )
+        if applied {
+            await flushSystemNameCaches()
+            await refreshSystemProxyStatus(updateStatusText: false)
+            statusText = effectiveProxyStatus.matchesBlaze
+                ? "Applied blaze as effective macOS proxy"
+                : "Applied \(networkServiceName), but effective proxy is \(effectiveProxyStatus.summary)"
+        }
     }
 
     func disableSystemProxySettings() async {
@@ -600,6 +674,189 @@ final class WorkbenchStore: ObservableObject {
             statusText = "System proxy status unknown; leaving it unchanged"
         }
         await stopLocalProxyStack()
+    }
+
+    func activatePacketTunnelSystemExtension() {
+        systemExtensionController.activate()
+    }
+
+    func deactivatePacketTunnelSystemExtension() {
+        systemExtensionController.deactivate()
+    }
+
+    func installPacketTunnelConfiguration() async {
+        do {
+            let excludedIPv4Addresses = await packetTunnelExcludedIPv4Addresses()
+            try await PacketTunnelConfigurationManager.installOrUpdateConfiguration(
+                httpPort: proxyListenPort,
+                socksPort: socksListenPort,
+                excludedIPv4Addresses: excludedIPv4Addresses
+            )
+            await refreshPacketTunnelStatus(updateStatusText: false)
+            let status = packetTunnelStatusText
+            packetTunnelStatusText = "Configuration installed with \(excludedIPv4Addresses.count) excluded upstream IPs; tunnel is \(status)"
+            statusText = packetTunnelStatusText
+        } catch {
+            packetTunnelStatusText = "Packet tunnel configuration failed: \(error)"
+            statusText = packetTunnelStatusText
+        }
+    }
+
+    func startPacketTunnel() async {
+        do {
+            await startLocalProxyStack()
+            let excludedIPv4Addresses = await packetTunnelExcludedIPv4Addresses()
+            try await PacketTunnelConfigurationManager.installOrUpdateConfiguration(
+                httpPort: proxyListenPort,
+                socksPort: socksListenPort,
+                excludedIPv4Addresses: excludedIPv4Addresses
+            )
+            try await PacketTunnelConfigurationManager.startTunnel()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await refreshPacketTunnelStatus(updateStatusText: false)
+            if packetTunnelConnected {
+                packetTunnelStatusText = "Packet tunnel connected; excluding \(excludedIPv4Addresses.count) upstream IPs"
+            } else {
+                packetTunnelStatusText = "Packet tunnel start requested; current status is \(packetTunnelStatusText)"
+            }
+            statusText = packetTunnelStatusText
+        } catch {
+            packetTunnelStatusText = "Packet tunnel start failed: \(error)"
+            statusText = packetTunnelStatusText
+        }
+    }
+
+    func stopPacketTunnel() async {
+        do {
+            try await PacketTunnelConfigurationManager.stopTunnel()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await refreshPacketTunnelStatus(updateStatusText: false)
+            packetTunnelStatusText = "Packet tunnel stop requested; current status is \(packetTunnelStatusText)"
+            statusText = packetTunnelStatusText
+        } catch {
+            packetTunnelStatusText = "Packet tunnel stop failed: \(error)"
+            statusText = packetTunnelStatusText
+        }
+    }
+
+    private func packetTunnelExcludedIPv4Addresses() async -> [String] {
+        var addresses = Set([
+            "1.1.1.1",
+            "1.0.0.1",
+            "8.8.8.8",
+            "8.8.4.4",
+            "9.9.9.9",
+            "149.112.112.112",
+            "223.5.5.5",
+            "223.6.6.6"
+        ])
+
+        for proxy in profile.proxies where proxy.kind != .direct && proxy.kind != .reject {
+            let host = proxy.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty, !Self.isLoopbackOrPrivateHost(host) else { continue }
+            if let address = Self.normalizedIPv4Address(host) {
+                addresses.insert(address)
+                continue
+            }
+
+            let diagnostic = await ProxyUpstreamResolutionDiagnostics.evaluate(host: host)
+            if let bypass = diagnostic.bypassIPv4Address {
+                addresses.insert(bypass)
+            }
+            for address in diagnostic.systemIPv4Addresses where !Self.isFakeIPv4Address(address) {
+                addresses.insert(address)
+            }
+        }
+
+        let result = addresses.sorted()
+        packetTunnelExcludedIPv4Summary = Self.packetTunnelExclusionSummary(result)
+        return result
+    }
+
+    private static func packetTunnelExclusionSummary(_ addresses: [String]) -> String {
+        guard !addresses.isEmpty else {
+            return "No tunnel bypass addresses computed"
+        }
+        let preview = addresses.prefix(10).joined(separator: ", ")
+        let suffix = addresses.count > 10 ? ", +\(addresses.count - 10) more" : ""
+        return "Excluding DoH and active upstream addresses: \(preview)\(suffix)"
+    }
+
+    private static func normalizedIPv4Address(_ value: String) -> String? {
+        var address = in_addr()
+        guard value.withCString({ inet_pton(AF_INET, $0, &address) == 1 }) else {
+            return nil
+        }
+        var copy = address
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        inet_ntop(AF_INET, &copy, &buffer, socklen_t(INET_ADDRSTRLEN))
+        let endIndex = buffer.firstIndex(of: 0) ?? buffer.endIndex
+        return String(decoding: buffer[..<endIndex].map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    private static func isFakeIPv4Address(_ value: String) -> Bool {
+        var address = in_addr()
+        guard value.withCString({ inet_pton(AF_INET, $0, &address) == 1 }) else {
+            return false
+        }
+        let numeric = UInt32(bigEndian: address.s_addr)
+        return (numeric & 0xFFFE_0000) == 0xC612_0000
+    }
+
+    private static func isLoopbackOrPrivateHost(_ host: String) -> Bool {
+        guard let address = normalizedIPv4Address(host) else {
+            return host == "localhost" || host.hasSuffix(".local")
+        }
+        var parsed = in_addr()
+        guard address.withCString({ inet_pton(AF_INET, $0, &parsed) == 1 }) else {
+            return false
+        }
+        let value = UInt32(bigEndian: parsed.s_addr)
+        return (value & 0xFF00_0000) == 0x7F00_0000
+            || (value & 0xFF00_0000) == 0x0A00_0000
+            || (value & 0xFFF0_0000) == 0xAC10_0000
+            || (value & 0xFFFF_0000) == 0xC0A8_0000
+            || (value & 0xFFFF_0000) == 0xA9FE_0000
+    }
+
+    func refreshPacketTunnelStatus() async {
+        await refreshPacketTunnelStatus(updateStatusText: true)
+    }
+
+    private func refreshPacketTunnelStatus(updateStatusText: Bool) async {
+        do {
+            let snapshot = try await PacketTunnelConfigurationManager.statusSnapshot()
+            packetTunnelStatusText = snapshot.text
+            packetTunnelConnected = snapshot.isConnected
+            packetTunnelTransitioning = snapshot.isTransitioning
+            if updateStatusText {
+                statusText = "Packet tunnel status: \(snapshot.text)"
+            }
+        } catch {
+            packetTunnelStatusText = "Not configured"
+            packetTunnelConnected = false
+            packetTunnelTransitioning = false
+            if updateStatusText {
+                statusText = "Packet tunnel status unavailable: \(error)"
+            }
+        }
+    }
+
+    func restoreSystemProxyForTermination() {
+        let service = networkServiceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !service.isEmpty else { return }
+
+        let commands: [MacProxySetupCommandInvocation]
+        if let restorePoint = systemProxyRestorePoint {
+            commands = restorePoint.restoreInvocations(networkService: service)
+        } else if systemProxyStatus.activation == .active || systemProxyStatus.activation == .partial {
+            commands = MacProxySetupCommands(networkService: service, httpPort: proxyListenPort, socksPort: socksListenPort).disableInvocations
+        } else {
+            return
+        }
+
+        guard !commands.isEmpty else { return }
+        try? Self.runNetworkSetupSynchronously(commands)
     }
 
     private func captureSystemProxyRestorePointIfNeeded() async {
@@ -659,6 +916,11 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    private func flushSystemNameCaches() async {
+        await Self.runBestEffortCommand(executablePath: "/usr/bin/dscacheutil", arguments: ["-flushcache"])
+        await Self.runBestEffortCommand(executablePath: "/usr/bin/killall", arguments: ["-HUP", "mDNSResponder"])
+    }
+
     func refreshSystemProxyStatus() async {
         await refreshSystemProxyStatus(updateStatusText: true)
     }
@@ -667,6 +929,7 @@ final class WorkbenchStore: ObservableObject {
         let service = networkServiceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !service.isEmpty else {
             systemProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
+            effectiveProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
             if updateStatusText {
                 statusText = "System proxy status failed: network service is empty"
             }
@@ -691,11 +954,21 @@ final class WorkbenchStore: ObservableObject {
                 expectedHTTPPort: proxyListenPort,
                 expectedSOCKSPort: socksListenPort
             )
+            if let effectiveProxyOutput = try? await Self.effectiveProxyOutput() {
+                effectiveProxyStatus = MacEffectiveProxyStatus.parseScutilProxy(
+                    effectiveProxyOutput,
+                    expectedHTTPPort: proxyListenPort,
+                    expectedSOCKSPort: socksListenPort
+                )
+            } else {
+                effectiveProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
+            }
             if updateStatusText {
-                statusText = "System proxy status: \(systemProxyStatus.activation.rawValue)"
+                statusText = "Configured \(networkServiceName): \(systemProxyStatus.activation.rawValue); effective: \(effectiveProxyStatus.summary)"
             }
         } catch {
             systemProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
+            effectiveProxyStatus = .unknown(expectedHTTPPort: proxyListenPort, expectedSOCKSPort: socksListenPort)
             if updateStatusText {
                 statusText = "System proxy status failed: \(error)"
             }
@@ -750,6 +1023,21 @@ final class WorkbenchStore: ObservableObject {
         }.value
     }
 
+    private nonisolated static func runNetworkSetupSynchronously(_ commands: [MacProxySetupCommandInvocation]) throws {
+        for command in commands {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: MacProxySetupCommandInvocation.executablePath)
+            process.arguments = command.arguments
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw NetworkServiceDetectionError.commandFailed("\(command.displayCommand) exited with \(process.terminationStatus)")
+            }
+        }
+    }
+
     private nonisolated static func systemProxyStatusOutputs(service: String) async throws -> (web: String, secureWeb: String, socks: String) {
         async let web = networkSetupOutput(arguments: ["-getwebproxy", service])
         async let secureWeb = networkSetupOutput(arguments: ["-getsecurewebproxy", service])
@@ -781,6 +1069,82 @@ final class WorkbenchStore: ObservableObject {
         }.value
     }
 
+    private nonisolated static func effectiveProxyOutput() async throws -> String {
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+            process.arguments = ["--proxy"]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0 else {
+                let message = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "scutil exited with \(process.terminationStatus)")
+            }
+            return String(data: output, encoding: .utf8) ?? ""
+        }.value
+    }
+
+    private nonisolated static func runBestEffortCommand(executablePath: String, arguments: [String]) async {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                return
+            }
+        }.value
+    }
+
+    private nonisolated static func openChromeTestBrowser(httpPort: Int, socksPort: Int) async throws {
+        try await Task.detached(priority: .utility) {
+            let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+            let profileDirectory = supportDirectory
+                .appendingPathComponent("blaze", isDirectory: true)
+                .appendingPathComponent("ChromeTestProfile", isDirectory: true)
+            try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = [
+                "-na", "Google Chrome",
+                "--args",
+                "--user-data-dir=\(profileDirectory.path)",
+                "--proxy-server=http=127.0.0.1:\(httpPort);https=127.0.0.1:\(httpPort);socks=socks5://127.0.0.1:\(socksPort)",
+                "--disable-quic",
+                "--no-first-run",
+                "https://www.google.com/",
+                "https://www.baidu.com/"
+            ]
+            process.standardOutput = Pipe()
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let message = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "open exited with \(process.terminationStatus)")
+            }
+        }.value
+    }
+
     func saveLocalState() {
         defaults.set(sourceText, forKey: PersistenceKey.sourceText)
         defaults.set(remoteProfileURLText, forKey: PersistenceKey.remoteProfileURL)
@@ -791,6 +1155,7 @@ final class WorkbenchStore: ObservableObject {
         defaults.set(proxyRoutingMode.rawValue, forKey: PersistenceKey.proxyRoutingMode)
         defaults.set(globalProxyPolicy, forKey: PersistenceKey.globalProxyPolicy)
         defaults.set(Array(favoriteProxyNames).sorted(), forKey: PersistenceKey.favoriteProxyNames)
+        persistRuleSetCache()
         persistSystemProxyRestorePoint()
     }
 
@@ -840,13 +1205,51 @@ final class WorkbenchStore: ObservableObject {
         }
 
         await refreshSystemProxyStatus(updateStatusText: false)
+        await refreshPacketTunnelStatus(updateStatusText: false)
+
+        await appendPolicyDiagnostics()
+
         await appendConnectivityResult(
             ConnectivityTestResult(
-                name: "System Proxy",
-                transport: "macOS",
+                name: "Configured Proxy",
+                transport: "networksetup",
                 target: networkServiceName,
                 status: systemProxyStatus.activation == .active ? .passed : .failed,
                 detail: systemProxyStatus.summary,
+                durationMilliseconds: nil
+            )
+        )
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Browser Route",
+                transport: "scutil",
+                target: "Current effective route",
+                status: browserTrafficShouldReachBlaze ? .passed : (effectiveProxyStatus.anyProxyEnabled ? .failed : .info),
+                detail: browserTrafficShouldReachBlaze
+                    ? (packetTunnelConnected ? "Packet tunnel is connected" : "Effective proxy is Blaze")
+                    : "\(effectiveProxyStatus.summary); configured \(networkServiceName): \(systemProxyStatus.summary)",
+                durationMilliseconds: nil
+            )
+        )
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Packet Tunnel",
+                transport: "Network Extension",
+                target: "blaze Packet Tunnel",
+                status: packetTunnelConnected ? .passed : .info,
+                detail: packetTunnelStatusText,
+                durationMilliseconds: nil
+            )
+        )
+
+        let excludedIPv4Addresses = await packetTunnelExcludedIPv4Addresses()
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Tunnel Bypass",
+                transport: "Routing",
+                target: "\(excludedIPv4Addresses.count) IPv4 addresses",
+                status: excludedIPv4Addresses.isEmpty ? .failed : .passed,
+                detail: Self.packetTunnelExclusionSummary(excludedIPv4Addresses),
                 durationMilliseconds: nil
             )
         )
@@ -874,7 +1277,7 @@ final class WorkbenchStore: ObservableObject {
         )
 
         if let proxy = diagnosticProxy(for: "www.google.com") {
-            let dnsResult = ConnectivityDNSProbe.evaluate(host: proxy.host, proxyName: proxy.name)
+            let dnsResult = await ConnectivityDNSProbe.evaluate(host: proxy.host, proxyName: proxy.name)
             await appendConnectivityResult(dnsResult)
         } else {
             await appendConnectivityResult(
@@ -896,6 +1299,12 @@ final class WorkbenchStore: ObservableObject {
             )
             await appendConnectivityResult(httpResult)
 
+            let fetchResult = await ConnectivityHTTPFetchProbe.fetch(
+                target: target,
+                proxyPort: proxyListenPort
+            )
+            await appendConnectivityResult(fetchResult)
+
             let socksResult = await ConnectivitySocketProbe.socks5Connect(
                 target: target,
                 proxyPort: socksListenPort
@@ -906,6 +1315,73 @@ final class WorkbenchStore: ObservableObject {
         let failures = connectivityTestResults.filter { $0.status == .failed }.count
         statusText = failures == 0 ? "Connectivity diagnostics passed" : "Connectivity diagnostics found \(failures) issue\(failures == 1 ? "" : "s")"
         await refreshProxyEvents()
+    }
+
+    private func appendPolicyDiagnostics() async {
+        let ruleSetCount = profile.rules.filter { $0.type == "RULE-SET" }.count
+        let ruleCacheDetail: String
+        let ruleCacheStatus: ConnectivityTestStatus
+        if ruleSetCount == 0 {
+            ruleCacheDetail = "Profile has no RULE-SET entries"
+            ruleCacheStatus = .info
+        } else if importedRuleSetRuleCount == 0 {
+            ruleCacheDetail = "\(ruleSetCount) RULE-SET entries are not downloaded; traffic can fall through to FINAL"
+            ruleCacheStatus = .failed
+        } else {
+            ruleCacheDetail = "\(importedRuleSetRuleCount) rules loaded from \(ruleSetCount) RULE-SET entries"
+            ruleCacheStatus = .passed
+        }
+
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Rule Cache",
+                transport: "Rules",
+                target: "\(ruleSetCount) remote sets",
+                status: ruleCacheStatus,
+                detail: ruleCacheDetail,
+                durationMilliseconds: nil
+            )
+        )
+
+        let modeDetail: String
+        let modeStatus: ConnectivityTestStatus
+        switch proxyRoutingMode {
+        case .ruleBased:
+            modeDetail = "Profile rules are active"
+            modeStatus = .passed
+        case .global:
+            modeDetail = "Global mode bypasses profile rules and routes everything through \(resolvedGlobalProxyPolicy)"
+            modeStatus = .failed
+        case .direct:
+            modeDetail = "Direct mode bypasses proxy outbounds"
+            modeStatus = .failed
+        }
+
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Routing Mode",
+                transport: "Policy",
+                target: activeRoutingSummary,
+                status: modeStatus,
+                detail: modeDetail,
+                durationMilliseconds: nil
+            )
+        )
+
+        for target in ConnectivityTarget.defaultTargets {
+            let host = target.url.host ?? target.url.absoluteString
+            let result = RouteProbe(profile: activeRoutingProfile(), groupSelections: selectedPolicies).evaluate(host)
+            await appendConnectivityResult(
+                ConnectivityTestResult(
+                    name: "\(target.name) Route",
+                    transport: "Policy",
+                    target: host,
+                    status: .info,
+                    detail: "\(result.rule) -> \(result.policyPath.isEmpty ? result.policy : result.policyPath)",
+                    durationMilliseconds: nil
+                )
+            )
+        }
     }
 
     func startLocalProxyServer() async {
@@ -1001,6 +1477,7 @@ final class WorkbenchStore: ObservableObject {
                 }
                 if Date() >= nextSystemProxyRefresh {
                     await self?.refreshSystemProxyStatus(updateStatusText: false)
+                    await self?.refreshPacketTunnelStatus(updateStatusText: false)
                     nextSystemProxyRefresh = Date().addingTimeInterval(3)
                 }
                 try? await Task.sleep(nanoseconds: 700_000_000)
@@ -1030,6 +1507,41 @@ final class WorkbenchStore: ObservableObject {
         let urls = Set(profile.rules.filter { $0.type == "RULE-SET" }.map(\.value))
         ruleSetRulesByURL = ruleSetRulesByURL.filter { urls.contains($0.key) }
         ruleSetStatusByURL = ruleSetStatusByURL.filter { urls.contains($0.key) }
+    }
+
+    private func restoreRuleSetCache() {
+        guard let data = try? Data(contentsOf: Self.ruleSetCacheURL()),
+              let cache = try? JSONDecoder().decode(RuleSetCache.self, from: data)
+        else {
+            reconcileRuleSets()
+            return
+        }
+
+        ruleSetRulesByURL = cache.rulesByURL
+        ruleSetStatusByURL = cache.statusByURL
+        reconcileRuleSets()
+        runRuleProbe()
+    }
+
+    private func persistRuleSetCache() {
+        let cache = RuleSetCache(rulesByURL: ruleSetRulesByURL, statusByURL: ruleSetStatusByURL)
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+
+        let url = Self.ruleSetCacheURL()
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            // Cache persistence is best-effort; imported rules remain active in memory.
+        }
+    }
+
+    private nonisolated static func ruleSetCacheURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base
+            .appendingPathComponent("blaze", isDirectory: true)
+            .appendingPathComponent("rule-set-cache.json", isDirectory: false)
     }
 
     private func activeRoutingProfile() -> ProxyProfile {
@@ -1094,6 +1606,11 @@ private enum PersistenceKey {
     static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy, favoriteProxyNames]
 }
 
+private struct RuleSetCache: Codable {
+    var rulesByURL: [String: [ProxyRule]]
+    var statusByURL: [String: String]
+}
+
 private struct ConnectivityTarget: Sendable {
     var name: String
     var url: URL
@@ -1101,8 +1618,80 @@ private struct ConnectivityTarget: Sendable {
 
     static let defaultTargets: [ConnectivityTarget] = [
         ConnectivityTarget(name: "Google", url: URL(string: "https://www.google.com/generate_204")!, expectedStatus: 204...204),
-        ConnectivityTarget(name: "Baidu", url: URL(string: "https://www.baidu.com/")!, expectedStatus: 200...399)
+        ConnectivityTarget(name: "Baidu", url: URL(string: "https://www.baidu.com/")!, expectedStatus: 200...399),
+        ConnectivityTarget(name: "ChatGPT", url: URL(string: "https://chatgpt.com/")!, expectedStatus: 200...499)
     ]
+}
+
+private enum ConnectivityHTTPFetchProbe {
+    static func fetch(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
+        let start = Date()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 25
+        configuration.timeoutIntervalForResource = 30
+        configuration.waitsForConnectivity = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as String: true,
+            kCFNetworkProxiesHTTPProxy as String: "127.0.0.1",
+            kCFNetworkProxiesHTTPPort as String: proxyPort,
+            kCFNetworkProxiesHTTPSEnable as String: true,
+            kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1",
+            kCFNetworkProxiesHTTPSPort as String: proxyPort
+        ]
+
+        let session = URLSession(configuration: configuration)
+        defer {
+            session.invalidateAndCancel()
+        }
+
+        var request = URLRequest(url: target.url)
+        request.setValue("blaze-connectivity-test", forHTTPHeaderField: "User-Agent")
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "HTTP Fetch",
+                    target: target.url.host ?? target.url.absoluteString,
+                    status: .failed,
+                    detail: "No HTTP response",
+                    durationMilliseconds: elapsed
+                )
+            }
+            let code = httpResponse.statusCode
+            return ConnectivityTestResult(
+                name: target.name,
+                transport: "HTTP Fetch",
+                target: target.url.host ?? target.url.absoluteString,
+                status: target.expectedStatus.contains(code) ? .passed : .failed,
+                detail: "HTTP fetch returned \(code)",
+                durationMilliseconds: elapsed
+            )
+        } catch {
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            return ConnectivityTestResult(
+                name: target.name,
+                transport: "HTTP Fetch",
+                target: target.url.host ?? target.url.absoluteString,
+                status: .failed,
+                detail: errorDescription(error),
+                durationMilliseconds: elapsed
+            )
+        }
+    }
+
+    private static func errorDescription(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return nsError.localizedDescription
+        }
+        return String(describing: error)
+    }
 }
 
 private enum ConnectivitySocketProbe {
@@ -1128,7 +1717,7 @@ private enum ConnectivitySocketProbe {
                 let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "HTTP",
+                    transport: "HTTP CONNECT",
                     target: host,
                     status: code == 200 ? .passed : .failed,
                     detail: code.map { "HTTP proxy returned \($0)" } ?? "Invalid HTTP proxy response",
@@ -1138,7 +1727,7 @@ private enum ConnectivitySocketProbe {
                 let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "HTTP",
+                    transport: "HTTP CONNECT",
                     target: host,
                     status: .failed,
                     detail: errorDescription(error),
@@ -1177,7 +1766,7 @@ private enum ConnectivitySocketProbe {
                 let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "SOCKS5",
+                    transport: "SOCKS5 CONNECT",
                     target: host,
                     status: replyCode == 0x00 ? .passed : .failed,
                     detail: replyCode == 0x00 ? "SOCKS5 CONNECT accepted" : "SOCKS5 reply code 0x\(String(format: "%02X", replyCode))",
@@ -1187,7 +1776,7 @@ private enum ConnectivitySocketProbe {
                 let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "SOCKS5",
+                    transport: "SOCKS5 CONNECT",
                     target: host,
                     status: .failed,
                     detail: errorDescription(error),
@@ -1328,9 +1917,9 @@ private enum ConnectivitySocketError: Error, CustomStringConvertible {
 }
 
 private enum ConnectivityDNSProbe {
-    static func evaluate(host: String, proxyName: String) -> ConnectivityTestResult {
-        let addresses = resolvedIPv4Addresses(for: host)
-        guard !addresses.isEmpty else {
+    static func evaluate(host: String, proxyName: String) async -> ConnectivityTestResult {
+        let diagnostic = await ProxyUpstreamResolutionDiagnostics.evaluate(host: host)
+        guard !diagnostic.systemIPv4Addresses.isEmpty else {
             return ConnectivityTestResult(
                 name: "Upstream DNS",
                 transport: "DNS",
@@ -1341,44 +1930,23 @@ private enum ConnectivityDNSProbe {
             )
         }
 
-        let isFakeIP = addresses.allSatisfy { ($0 & 0xFFFE_0000) == 0xC612_0000 }
+        let detail: String
+        if diagnostic.fakeIPDetected, let bypassIPv4Address = diagnostic.bypassIPv4Address {
+            detail = "System DNS returns 198.18 fake-ip; bypass resolves \(bypassIPv4Address)"
+        } else if diagnostic.fakeIPDetected {
+            detail = "System DNS returns 198.18 fake-ip and bypass resolution failed"
+        } else {
+            detail = "Active upstream resolves outside fake-ip range"
+        }
+
         return ConnectivityTestResult(
             name: "Upstream DNS",
             transport: "DNS",
             target: proxyName,
-            status: isFakeIP ? .failed : .passed,
-            detail: isFakeIP ? "Active upstream resolves to 198.18.0.0/15 fake-ip" : "Active upstream resolves outside fake-ip range",
+            status: diagnostic.canConnectWithoutFakeIP ? .passed : .failed,
+            detail: detail,
             durationMilliseconds: nil
         )
-    }
-
-    private static func resolvedIPv4Addresses(for host: String) -> [UInt32] {
-        var hints = addrinfo(
-            ai_flags: AI_NUMERICSERV,
-            ai_family: AF_INET,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: IPPROTO_TCP,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-        var info: UnsafeMutablePointer<addrinfo>?
-        let lookup = getaddrinfo(host, "443", &hints, &info)
-        guard lookup == 0, let first = info else {
-            return []
-        }
-        defer { freeaddrinfo(first) }
-
-        var result: [UInt32] = []
-        var current: UnsafeMutablePointer<addrinfo>? = first
-        while let address = current {
-            if let socketAddress = address.pointee.ai_addr?.withMemoryRebound(to: sockaddr_in.self, capacity: 1, { $0.pointee }) {
-                result.append(UInt32(bigEndian: socketAddress.sin_addr.s_addr))
-            }
-            current = address.pointee.ai_next
-        }
-        return result
     }
 }
 

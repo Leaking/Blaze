@@ -240,6 +240,85 @@ public struct MacSystemProxyStatus: Hashable, Codable, Sendable {
     }
 }
 
+public struct MacEffectiveProxyStatus: Hashable, Sendable {
+    public var web: MacProxyEndpointStatus?
+    public var secureWeb: MacProxyEndpointStatus?
+    public var socks: MacProxyEndpointStatus?
+    public var expectedHTTPPort: Int
+    public var expectedSOCKSPort: Int
+
+    public init(web: MacProxyEndpointStatus?, secureWeb: MacProxyEndpointStatus?, socks: MacProxyEndpointStatus?, expectedHTTPPort: Int, expectedSOCKSPort: Int) {
+        self.web = web
+        self.secureWeb = secureWeb
+        self.socks = socks
+        self.expectedHTTPPort = expectedHTTPPort
+        self.expectedSOCKSPort = expectedSOCKSPort
+    }
+
+    public static func unknown(expectedHTTPPort: Int, expectedSOCKSPort: Int) -> MacEffectiveProxyStatus {
+        MacEffectiveProxyStatus(web: nil, secureWeb: nil, socks: nil, expectedHTTPPort: expectedHTTPPort, expectedSOCKSPort: expectedSOCKSPort)
+    }
+
+    public static func parseScutilProxy(_ output: String, expectedHTTPPort: Int, expectedSOCKSPort: Int) -> MacEffectiveProxyStatus {
+        var values: [String: String] = [:]
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            values[String(key)] = String(value)
+        }
+
+        return MacEffectiveProxyStatus(
+            web: endpoint(enableKey: "HTTPEnable", proxyKey: "HTTPProxy", portKey: "HTTPPort", values: values),
+            secureWeb: endpoint(enableKey: "HTTPSEnable", proxyKey: "HTTPSProxy", portKey: "HTTPSPort", values: values),
+            socks: endpoint(enableKey: "SOCKSEnable", proxyKey: "SOCKSProxy", portKey: "SOCKSPort", values: values),
+            expectedHTTPPort: expectedHTTPPort,
+            expectedSOCKSPort: expectedSOCKSPort
+        )
+    }
+
+    public var matchesBlaze: Bool {
+        web?.matches(host: "127.0.0.1", port: expectedHTTPPort) == true
+            && secureWeb?.matches(host: "127.0.0.1", port: expectedHTTPPort) == true
+            && socks?.matches(host: "127.0.0.1", port: expectedSOCKSPort) == true
+    }
+
+    public var anyProxyEnabled: Bool {
+        [web, secureWeb, socks].contains { endpoint in
+            endpoint?.enabled == true
+        }
+    }
+
+    public var summary: String {
+        if matchesBlaze {
+            return "Blaze: HTTP \(expectedHTTPPort), SOCKS5 \(expectedSOCKSPort)"
+        }
+        if anyProxyEnabled {
+            return "Elsewhere: \(endpointSummary)"
+        }
+        if web == nil && secureWeb == nil && socks == nil {
+            return "Unknown"
+        }
+        return "Off"
+    }
+
+    private var endpointSummary: String {
+        [
+            "HTTP \(web?.displayValue ?? "-")",
+            "HTTPS \(secureWeb?.displayValue ?? "-")",
+            "SOCKS5 \(socks?.displayValue ?? "-")"
+        ].joined(separator: ", ")
+    }
+
+    private static func endpoint(enableKey: String, proxyKey: String, portKey: String, values: [String: String]) -> MacProxyEndpointStatus {
+        let enabled = ["1", "yes", "true", "on"].contains(values[enableKey]?.lowercased() ?? "")
+        let server = values[proxyKey] ?? ""
+        let port = values[portKey].flatMap(Int.init)
+        return MacProxyEndpointStatus(enabled: enabled, server: server, port: port)
+    }
+}
+
 private extension MacProxyEndpointStatus {
     var displayValue: String {
         guard enabled else { return "off" }
