@@ -687,6 +687,13 @@ final class WorkbenchStore: ObservableObject {
 
     func installPacketTunnelConfiguration() async {
         do {
+            if let snapshot = try? await PacketTunnelConfigurationManager.statusSnapshot(),
+               snapshot.isConnected || snapshot.isTransitioning {
+                packetTunnelStatusText = "Stop the packet tunnel before reinstalling configuration; current status is \(snapshot.text)"
+                statusText = packetTunnelStatusText
+                return
+            }
+
             let excludedIPv4Addresses = await packetTunnelExcludedIPv4Addresses()
             try await PacketTunnelConfigurationManager.installOrUpdateConfiguration(
                 httpPort: proxyListenPort,
@@ -706,6 +713,18 @@ final class WorkbenchStore: ObservableObject {
     func startPacketTunnel() async {
         do {
             await startLocalProxyStack()
+            if let snapshot = try? await PacketTunnelConfigurationManager.statusSnapshot(),
+               snapshot.isConnected || snapshot.isTransitioning {
+                packetTunnelStatusText = "Packet tunnel is already \(snapshot.text); leaving configuration unchanged"
+                packetTunnelConnected = snapshot.isConnected
+                packetTunnelTransitioning = snapshot.isTransitioning
+                statusText = packetTunnelStatusText
+                if snapshot.isConnected {
+                    await refreshPacketTunnelDiagnostics(updateStatusText: false)
+                }
+                return
+            }
+
             let excludedIPv4Addresses = await packetTunnelExcludedIPv4Addresses()
             try await PacketTunnelConfigurationManager.installOrUpdateConfiguration(
                 httpPort: proxyListenPort,
