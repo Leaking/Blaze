@@ -4,7 +4,7 @@ import XCTest
 
 final class TCPOptionsTests: XCTestCase {
     func testSYNOptionsRoundTripThroughTCPPacketFactory() {
-        let options = Data(TCPOptions.synAckOptions(maxSegmentSize: 1360, windowScale: 0))
+        let options = Data(TCPOptions.synAckOptions(maxSegmentSize: 1360, windowScale: 0, sackPermitted: true))
 
         let packet = IPv4PacketFactory.tcp(
             sourceAddress: 0xC612_0001,
@@ -29,6 +29,16 @@ final class TCPOptionsTests: XCTestCase {
         XCTAssertEqual(parsed.maxSegmentSize, 1360)
         XCTAssertTrue(parsed.sackPermitted)
         XCTAssertEqual(parsed.windowScale, 0)
+    }
+
+    func testSYNACKOmitsNegotiatedOptionsWhenClientDidNotOfferThem() {
+        let options = Data(TCPOptions.synAckOptions(maxSegmentSize: 1360, windowScale: nil, sackPermitted: false))
+
+        let parsed = TCPOptions.parse(options)
+        XCTAssertEqual(parsed.maxSegmentSize, 1360)
+        XCTAssertFalse(parsed.sackPermitted)
+        XCTAssertNil(parsed.windowScale)
+        XCTAssertEqual(options.count, 8)
     }
 
     func testMalformedOptionsStopParsingWithoutCrashing() {

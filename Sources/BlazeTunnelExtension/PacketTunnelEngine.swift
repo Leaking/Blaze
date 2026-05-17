@@ -50,6 +50,22 @@ struct PacketTunnelDiagnostics: Codable, Equatable, Sendable {
     var activeTCPFlows: Int = 0
     var activeUDPFlows: Int = 0
     var fakeIPMappings: Int = 0
+    var tcpFlowsOpened: UInt64 = 0
+    var tcpFlowsClosed: UInt64 = 0
+    var tcpSocksConnectAttempts: UInt64 = 0
+    var tcpSocksConnectSuccesses: UInt64 = 0
+    var tcpSocksConnectFailures: UInt64 = 0
+    var tcpClientBytesReceived: UInt64 = 0
+    var tcpUpstreamBytesSent: UInt64 = 0
+    var tcpUpstreamBytesReceived: UInt64 = 0
+    var tcpClientBytesSent: UInt64 = 0
+    var tcpPacketsWritten: UInt64 = 0
+    var tcpRetransmittedPackets: UInt64 = 0
+    var tcpResetsSent: UInt64 = 0
+    var tcpPendingWriteOverflows: UInt64 = 0
+    var tcpOutboundBufferOverflows: UInt64 = 0
+    var tcpWindowStalls: UInt64 = 0
+    var tcpUpstreamCloses: UInt64 = 0
 }
 
 final class PacketTunnelEngine: @unchecked Sendable {
@@ -176,11 +192,15 @@ final class PacketTunnelEngine: @unchecked Sendable {
                 packetWriter: { [weak self] packet in
                     self?.writeIPv4Packet(packet)
                 },
+                eventHandler: { [weak self] event in
+                    self?.recordTCPEvent(event)
+                },
                 onClose: { [weak self] flowKey in
                     self?.removeFlow(flowKey)
                 }
             )
             flows[key] = flow
+            diagnostics.tcpFlowsOpened &+= 1
         } else {
             return
         }
@@ -267,6 +287,62 @@ final class PacketTunnelEngine: @unchecked Sendable {
             self?.udpFlows.removeValue(forKey: key)
         }
     }
+
+    private func recordTCPEvent(_ event: TCPForwarderEvent) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            switch event {
+            case .flowClosed:
+                self.diagnostics.tcpFlowsClosed &+= 1
+            case .socksConnectAttempt:
+                self.diagnostics.tcpSocksConnectAttempts &+= 1
+            case .socksConnectSucceeded:
+                self.diagnostics.tcpSocksConnectSuccesses &+= 1
+            case .socksConnectFailed:
+                self.diagnostics.tcpSocksConnectFailures &+= 1
+            case .clientPayloadReceived(let byteCount):
+                self.diagnostics.tcpClientBytesReceived &+= UInt64(byteCount)
+            case .upstreamPayloadSent(let byteCount):
+                self.diagnostics.tcpUpstreamBytesSent &+= UInt64(byteCount)
+            case .upstreamPayloadReceived(let byteCount):
+                self.diagnostics.tcpUpstreamBytesReceived &+= UInt64(byteCount)
+            case .clientPayloadSent(let byteCount):
+                self.diagnostics.tcpClientBytesSent &+= UInt64(byteCount)
+            case .packetWritten:
+                self.diagnostics.tcpPacketsWritten &+= 1
+            case .packetRetransmitted:
+                self.diagnostics.tcpRetransmittedPackets &+= 1
+            case .resetSent:
+                self.diagnostics.tcpResetsSent &+= 1
+            case .pendingWriteOverflow:
+                self.diagnostics.tcpPendingWriteOverflows &+= 1
+            case .outboundBufferOverflow:
+                self.diagnostics.tcpOutboundBufferOverflows &+= 1
+            case .windowStall:
+                self.diagnostics.tcpWindowStalls &+= 1
+            case .upstreamClosed:
+                self.diagnostics.tcpUpstreamCloses &+= 1
+            }
+        }
+    }
+}
+
+private enum TCPForwarderEvent: Sendable {
+    case flowClosed
+    case socksConnectAttempt
+    case socksConnectSucceeded
+    case socksConnectFailed
+    case clientPayloadReceived(Int)
+    case upstreamPayloadSent(Int)
+    case upstreamPayloadReceived(Int)
+    case clientPayloadSent(Int)
+    case packetWritten
+    case packetRetransmitted
+    case resetSent
+    case pendingWriteOverflow
+    case outboundBufferOverflow
+    case windowStall
+    case upstreamClosed
 }
 
 enum IPProtocolNumber {
@@ -370,16 +446,20 @@ struct TCPOptions: Equatable, Sendable {
         return result
     }
 
-    static func synAckOptions(maxSegmentSize: Int, windowScale: UInt8) -> [UInt8] {
+    static func synAckOptions(maxSegmentSize: Int, windowScale: UInt8?, sackPermitted: Bool) -> [UInt8] {
         var options: [UInt8] = []
         options.append(2)
         options.append(4)
         options.append(contentsOf: UInt16(min(max(maxSegmentSize, 536), 9_000)).bytes)
-        options.append(4)
-        options.append(2)
-        options.append(3)
-        options.append(3)
-        options.append(min(windowScale, 14))
+        if sackPermitted {
+            options.append(4)
+            options.append(2)
+        }
+        if let windowScale {
+            options.append(3)
+            options.append(3)
+            options.append(min(windowScale, 14))
+        }
         options.append(0)
         while options.count % 4 != 0 {
             options.append(0)
@@ -461,6 +541,7 @@ private final class TCPForwarder: @unchecked Sendable {
     private let socksHost: String
     private let socksPort: Int
     private let packetWriter: @Sendable (Data) -> Void
+    private let eventHandler: @Sendable (TCPForwarderEvent) -> Void
     private let onClose: @Sendable (TCPFlowKey) -> Void
     private let queue: DispatchQueue
     private var activityDeadline = TCPActivityDeadline(timeoutNanos: 120_000_000_000)
@@ -474,6 +555,8 @@ private final class TCPForwarder: @unchecked Sendable {
     private var clientAdvertisedWindow: UInt32 = 65_535
     private var clientWindowScale: UInt8 = 0
     private var clientMaximumSegmentSize = 1360
+    private var serverWindowScale: UInt8?
+    private var serverSACKPermitted = false
     private var inboundReassembler = TCPInboundReassembler(maxBufferedBytes: 512 * 1024)
     private var outboundTracker = TCPOutboundSegmentTracker(maxRetainedBytes: 512 * 1024)
     private var pendingWrites = TCPPendingWriteBuffer(maxBufferedBytes: 512 * 1024)
@@ -488,6 +571,7 @@ private final class TCPForwarder: @unchecked Sendable {
         socksHost: String,
         socksPort: Int,
         packetWriter: @escaping @Sendable (Data) -> Void,
+        eventHandler: @escaping @Sendable (TCPForwarderEvent) -> Void,
         onClose: @escaping @Sendable (TCPFlowKey) -> Void
     ) {
         self.key = key
@@ -495,6 +579,7 @@ private final class TCPForwarder: @unchecked Sendable {
         self.socksHost = socksHost
         self.socksPort = socksPort
         self.packetWriter = packetWriter
+        self.eventHandler = eventHandler
         self.onClose = onClose
         let initialSequence = UInt32.random(in: 1...UInt32.max)
         serverInitialSequence = initialSequence
@@ -546,6 +631,7 @@ private final class TCPForwarder: @unchecked Sendable {
             case .accepted(let payloads):
                 shouldAcknowledgePayload = true
                 for payload in payloads {
+                    eventHandler(.clientPayloadReceived(payload.count))
                     writeOrBufferLocked(payload)
                 }
             case .overflow:
@@ -575,6 +661,8 @@ private final class TCPForwarder: @unchecked Sendable {
             clientNextSequence = packet.sequenceNumber &+ 1
             clientWindowScale = packet.options.windowScale ?? 0
             clientMaximumSegmentSize = max(536, min(packet.options.maxSegmentSize ?? 1360, 1360))
+            serverWindowScale = packet.options.windowScale == nil ? nil : 0
+            serverSACKPermitted = packet.options.sackPermitted
             updateClientWindowLocked(packet)
             state = .synReceived
             sendSegmentLocked(flags: [.syn, .ack], payload: Data())
@@ -611,6 +699,7 @@ private final class TCPForwarder: @unchecked Sendable {
     private func startUpstreamLocked() {
         guard !connecting, socketFD < 0 else { return }
         connecting = true
+        eventHandler(.socksConnectAttempt)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -622,10 +711,12 @@ private final class TCPForwarder: @unchecked Sendable {
                     destinationPort: self.key.destinationPort
                 )
                 self.queue.async {
+                    self.eventHandler(.socksConnectSucceeded)
                     self.finishUpstreamConnectLocked(fd: fd)
                 }
             } catch {
                 self.queue.async {
+                    self.eventHandler(.socksConnectFailed)
                     self.sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
                     self.closeLocked(notify: true)
                 }
@@ -694,6 +785,7 @@ private final class TCPForwarder: @unchecked Sendable {
             _ = writeSocketLocked(payload)
         } else {
             guard pendingWrites.append(payload) else {
+                eventHandler(.pendingWriteOverflow)
                 sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
                 closeLocked(notify: true)
                 return
@@ -721,6 +813,8 @@ private final class TCPForwarder: @unchecked Sendable {
         if !ok {
             sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
             closeLocked(notify: true)
+        } else {
+            eventHandler(.upstreamPayloadSent(payload.count))
         }
         return ok
     }
@@ -744,7 +838,9 @@ private final class TCPForwarder: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, self.state != .closed else { return }
             self.markActivityLocked()
+            self.eventHandler(.upstreamPayloadReceived(data.count))
             guard self.pendingOutboundData.append(data) else {
+                self.eventHandler(.outboundBufferOverflow)
                 self.sendSegmentLocked(flags: [.reset, .ack], payload: Data(), advanceSequence: false)
                 self.closeLocked(notify: true)
                 return
@@ -761,6 +857,7 @@ private final class TCPForwarder: @unchecked Sendable {
                 Darwin.close(self.socketFD)
                 self.socketFD = -1
             }
+            self.eventHandler(.upstreamClosed)
             self.upstreamClosePending = true
             self.finishPendingUpstreamCloseIfPossibleLocked()
         }
@@ -782,7 +879,7 @@ private final class TCPForwarder: @unchecked Sendable {
     ) {
         let sequenceNumber = sequenceNumberOverride ?? serverSequence
         let options = flags.contains(.syn)
-            ? Data(TCPOptions.synAckOptions(maxSegmentSize: 1360, windowScale: 0))
+            ? Data(TCPOptions.synAckOptions(maxSegmentSize: 1360, windowScale: serverWindowScale, sackPermitted: serverSACKPermitted))
             : Data()
         let packet = IPv4PacketFactory.tcp(
             sourceAddress: key.destinationAddress,
@@ -797,6 +894,13 @@ private final class TCPForwarder: @unchecked Sendable {
             payload: payload
         )
         packetWriter(packet)
+        eventHandler(.packetWritten)
+        if !payload.isEmpty {
+            eventHandler(.clientPayloadSent(payload.count))
+        }
+        if flags.contains(.reset) {
+            eventHandler(.resetSent)
+        }
 
         guard advanceSequence else { return }
         let increment = TCPOutboundSegmentTracker.sequenceLength(flags: flags, payloadLength: payload.count)
@@ -830,6 +934,11 @@ private final class TCPForwarder: @unchecked Sendable {
             payload: segment.payload
         )
         packetWriter(packet)
+        eventHandler(.packetWritten)
+        eventHandler(.packetRetransmitted)
+        if !segment.payload.isEmpty {
+            eventHandler(.clientPayloadSent(segment.payload.count))
+        }
     }
 
     private func flushOutboundDataLocked() {
@@ -838,9 +947,15 @@ private final class TCPForwarder: @unchecked Sendable {
             let availableWindow = clientAdvertisedWindow > outboundTracker.inFlightSequenceLength
                 ? clientAdvertisedWindow - outboundTracker.inFlightSequenceLength
                 : 0
-            guard availableWindow > 0 else { break }
+            guard availableWindow > 0 else {
+                eventHandler(.windowStall)
+                break
+            }
             let chunkSize = min(clientMaximumSegmentSize, Int(availableWindow), pendingOutboundData.count)
-            guard chunkSize > 0, let chunk = pendingOutboundData.popPrefix(chunkSize) else { break }
+            guard chunkSize > 0, let chunk = pendingOutboundData.popPrefix(chunkSize) else {
+                eventHandler(.windowStall)
+                break
+            }
             sendSegmentLocked(flags: [.push, .ack], payload: chunk)
             guard state != .closed else { return }
         }
@@ -941,6 +1056,7 @@ private final class TCPForwarder: @unchecked Sendable {
         pendingWrites.removeAll()
         pendingOutboundData.removeAll()
         upstreamClosePending = false
+        eventHandler(.flowClosed)
         if notify {
             onClose(key)
         }
@@ -1335,6 +1451,9 @@ private enum SOCKS5Connector {
         guard fd >= 0 else {
             throw ConnectorError.connectFailed(errno)
         }
+
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 
         var timeout = timeval(tv_sec: 12, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))

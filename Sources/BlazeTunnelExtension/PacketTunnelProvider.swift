@@ -20,7 +20,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         var excludedRoutes = [
             NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
             NEIPv4Route(destinationAddress: "100.64.0.0", subnetMask: "255.192.0.0"),
-            NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0"),
             NEIPv4Route(destinationAddress: "169.254.0.0", subnetMask: "255.255.0.0"),
             NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
             NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
@@ -36,7 +35,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let ipv6 = NEIPv6Settings(addresses: ["fd7a:626c:617a:6500::2"], networkPrefixLengths: [128])
             ipv6.includedRoutes = [NEIPv6Route.default()]
             ipv6.excludedRoutes = [
-                NEIPv6Route(destinationAddress: "::1", networkPrefixLength: 128),
                 NEIPv6Route(destinationAddress: "fe80::", networkPrefixLength: 10),
                 NEIPv6Route(destinationAddress: "fc00::", networkPrefixLength: 7),
                 NEIPv6Route(destinationAddress: "ff00::", networkPrefixLength: 8)

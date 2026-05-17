@@ -43,9 +43,94 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
     var activeTCPFlows: Int
     var activeUDPFlows: Int
     var fakeIPMappings: Int
+    var tcpFlowsOpened: UInt64
+    var tcpFlowsClosed: UInt64
+    var tcpSocksConnectAttempts: UInt64
+    var tcpSocksConnectSuccesses: UInt64
+    var tcpSocksConnectFailures: UInt64
+    var tcpClientBytesReceived: UInt64
+    var tcpUpstreamBytesSent: UInt64
+    var tcpUpstreamBytesReceived: UInt64
+    var tcpClientBytesSent: UInt64
+    var tcpPacketsWritten: UInt64
+    var tcpRetransmittedPackets: UInt64
+    var tcpResetsSent: UInt64
+    var tcpPendingWriteOverflows: UInt64
+    var tcpOutboundBufferOverflows: UInt64
+    var tcpWindowStalls: UInt64
+    var tcpUpstreamCloses: UInt64
 
     var summary: String {
-        "packets \(packetsRead), IPv4 \(ipv4Packets), IPv6 \(ipv6Packets), TCP \(tcpPackets), UDP \(udpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows)"
+        "packets \(packetsRead), TCP \(tcpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows), SOCKS \(tcpSocksConnectAttempts)/\(tcpSocksConnectSuccesses)/\(tcpSocksConnectFailures), bytes c>u \(tcpUpstreamBytesSent), u>c \(tcpClientBytesSent), writes \(tcpPacketsWritten), rtx \(tcpRetransmittedPackets), rst \(tcpResetsSent), closed \(tcpFlowsClosed)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case packetsRead
+        case ipv4Packets
+        case ipv6Packets
+        case unknownPackets
+        case tcpPackets
+        case udpPackets
+        case dnsQueries
+        case fakeIPTCPDestinations
+        case fakeIPUDPDestinations
+        case udpRelayedPackets
+        case udpRejectedPackets
+        case ipv6BlackholedPackets
+        case activeTCPFlows
+        case activeUDPFlows
+        case fakeIPMappings
+        case tcpFlowsOpened
+        case tcpFlowsClosed
+        case tcpSocksConnectAttempts
+        case tcpSocksConnectSuccesses
+        case tcpSocksConnectFailures
+        case tcpClientBytesReceived
+        case tcpUpstreamBytesSent
+        case tcpUpstreamBytesReceived
+        case tcpClientBytesSent
+        case tcpPacketsWritten
+        case tcpRetransmittedPackets
+        case tcpResetsSent
+        case tcpPendingWriteOverflows
+        case tcpOutboundBufferOverflows
+        case tcpWindowStalls
+        case tcpUpstreamCloses
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        packetsRead = try container.decodeIfPresent(UInt64.self, forKey: .packetsRead) ?? 0
+        ipv4Packets = try container.decodeIfPresent(UInt64.self, forKey: .ipv4Packets) ?? 0
+        ipv6Packets = try container.decodeIfPresent(UInt64.self, forKey: .ipv6Packets) ?? 0
+        unknownPackets = try container.decodeIfPresent(UInt64.self, forKey: .unknownPackets) ?? 0
+        tcpPackets = try container.decodeIfPresent(UInt64.self, forKey: .tcpPackets) ?? 0
+        udpPackets = try container.decodeIfPresent(UInt64.self, forKey: .udpPackets) ?? 0
+        dnsQueries = try container.decodeIfPresent(UInt64.self, forKey: .dnsQueries) ?? 0
+        fakeIPTCPDestinations = try container.decodeIfPresent(UInt64.self, forKey: .fakeIPTCPDestinations) ?? 0
+        fakeIPUDPDestinations = try container.decodeIfPresent(UInt64.self, forKey: .fakeIPUDPDestinations) ?? 0
+        udpRelayedPackets = try container.decodeIfPresent(UInt64.self, forKey: .udpRelayedPackets) ?? 0
+        udpRejectedPackets = try container.decodeIfPresent(UInt64.self, forKey: .udpRejectedPackets) ?? 0
+        ipv6BlackholedPackets = try container.decodeIfPresent(UInt64.self, forKey: .ipv6BlackholedPackets) ?? 0
+        activeTCPFlows = try container.decodeIfPresent(Int.self, forKey: .activeTCPFlows) ?? 0
+        activeUDPFlows = try container.decodeIfPresent(Int.self, forKey: .activeUDPFlows) ?? 0
+        fakeIPMappings = try container.decodeIfPresent(Int.self, forKey: .fakeIPMappings) ?? 0
+        tcpFlowsOpened = try container.decodeIfPresent(UInt64.self, forKey: .tcpFlowsOpened) ?? 0
+        tcpFlowsClosed = try container.decodeIfPresent(UInt64.self, forKey: .tcpFlowsClosed) ?? 0
+        tcpSocksConnectAttempts = try container.decodeIfPresent(UInt64.self, forKey: .tcpSocksConnectAttempts) ?? 0
+        tcpSocksConnectSuccesses = try container.decodeIfPresent(UInt64.self, forKey: .tcpSocksConnectSuccesses) ?? 0
+        tcpSocksConnectFailures = try container.decodeIfPresent(UInt64.self, forKey: .tcpSocksConnectFailures) ?? 0
+        tcpClientBytesReceived = try container.decodeIfPresent(UInt64.self, forKey: .tcpClientBytesReceived) ?? 0
+        tcpUpstreamBytesSent = try container.decodeIfPresent(UInt64.self, forKey: .tcpUpstreamBytesSent) ?? 0
+        tcpUpstreamBytesReceived = try container.decodeIfPresent(UInt64.self, forKey: .tcpUpstreamBytesReceived) ?? 0
+        tcpClientBytesSent = try container.decodeIfPresent(UInt64.self, forKey: .tcpClientBytesSent) ?? 0
+        tcpPacketsWritten = try container.decodeIfPresent(UInt64.self, forKey: .tcpPacketsWritten) ?? 0
+        tcpRetransmittedPackets = try container.decodeIfPresent(UInt64.self, forKey: .tcpRetransmittedPackets) ?? 0
+        tcpResetsSent = try container.decodeIfPresent(UInt64.self, forKey: .tcpResetsSent) ?? 0
+        tcpPendingWriteOverflows = try container.decodeIfPresent(UInt64.self, forKey: .tcpPendingWriteOverflows) ?? 0
+        tcpOutboundBufferOverflows = try container.decodeIfPresent(UInt64.self, forKey: .tcpOutboundBufferOverflows) ?? 0
+        tcpWindowStalls = try container.decodeIfPresent(UInt64.self, forKey: .tcpWindowStalls) ?? 0
+        tcpUpstreamCloses = try container.decodeIfPresent(UInt64.self, forKey: .tcpUpstreamCloses) ?? 0
     }
 }
 
