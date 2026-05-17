@@ -17,6 +17,8 @@ SYSTEM_EXTENSIONS_DIR="$CONTENTS_DIR/Library/SystemExtensions"
 TUNNEL_EXTENSION_DIR="$SYSTEM_EXTENSIONS_DIR/$TUNNEL_BUNDLE_ID.systemextension"
 TUNNEL_CONTENTS_DIR="$TUNNEL_EXTENSION_DIR/Contents"
 TUNNEL_MACOS_DIR="$TUNNEL_CONTENTS_DIR/MacOS"
+TUNNEL_FRAMEWORKS_DIR="$TUNNEL_CONTENTS_DIR/Frameworks"
+HEV_LIBRARY_DIR="${BLAZE_HEV_LIBRARY_DIR:-$ROOT_DIR/Vendor/HevSocks5Tunnel/macos-arm64}"
 SIGN_IDENTITY="${BLAZE_SIGN_IDENTITY:-}"
 ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS="${BLAZE_ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS:-0}"
 APP_PROVISIONING_PROFILE="${BLAZE_APP_PROVISIONING_PROFILE:-}"
@@ -201,6 +203,16 @@ chmod +x "$MACOS_DIR/$APP_NAME"
 cp "$BUILD_DIR/arm64-apple-macosx/release/$TUNNEL_PRODUCT" "$TUNNEL_MACOS_DIR/$TUNNEL_PRODUCT"
 chmod +x "$TUNNEL_MACOS_DIR/$TUNNEL_PRODUCT"
 
+HEV_DYLIBS=()
+if [[ -d "$HEV_LIBRARY_DIR" ]]; then
+    HEV_DYLIBS=("$HEV_LIBRARY_DIR"/*.dylib)
+fi
+
+if [[ "${#HEV_DYLIBS[@]}" -gt 0 && -f "${HEV_DYLIBS[0]}" ]]; then
+    mkdir -p "$TUNNEL_FRAMEWORKS_DIR"
+    cp "${HEV_DYLIBS[@]}" "$TUNNEL_FRAMEWORKS_DIR"/
+fi
+
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string blaze" "$CONTENTS_DIR/Info.plist"
@@ -264,9 +276,21 @@ if [[ "$ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS" == "1" ]]; then
         [[ -n "$arg" ]] && CODESIGN_TIMESTAMP_ARGS+=("$arg")
     done < <(codesign_timestamp_args "$SIGN_IDENTITY")
 
+    if [[ -d "$TUNNEL_FRAMEWORKS_DIR" ]]; then
+        while IFS= read -r dylib; do
+            codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" "$dylib" >/dev/null
+        done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
+    fi
+
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_TUNNEL_ENTITLEMENTS" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_APP_ENTITLEMENTS" "$APP_DIR" >/dev/null
 else
+    if [[ -d "$TUNNEL_FRAMEWORKS_DIR" ]]; then
+        while IFS= read -r dylib; do
+            codesign --force --sign "$SIGN_IDENTITY" "$dylib" >/dev/null
+        done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
+    fi
+
     codesign --force --sign "$SIGN_IDENTITY" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
     echo "Signed without restricted System Extension entitlements. Set BLAZE_ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS=1 with a valid provisioning setup to test activation."

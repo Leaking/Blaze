@@ -59,9 +59,23 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
     var tcpOutboundBufferOverflows: UInt64
     var tcpWindowStalls: UInt64
     var tcpUpstreamCloses: UInt64
+    var hevPacketsSentToTunnel: UInt64
+    var hevBytesSentToTunnel: UInt64
+    var hevPacketsReceivedFromTunnel: UInt64
+    var hevBytesReceivedFromTunnel: UInt64
+    var hevBridgeWriteFailures: UInt64
+    var hevTunnelTxPackets: UInt64
+    var hevTunnelTxBytes: UInt64
+    var hevTunnelRxPackets: UInt64
+    var hevTunnelRxBytes: UInt64
 
     var summary: String {
-        "packets \(packetsRead), TCP \(tcpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows), SOCKS \(tcpSocksConnectAttempts)/\(tcpSocksConnectSuccesses)/\(tcpSocksConnectFailures), bytes c>u \(tcpUpstreamBytesSent), u>c \(tcpClientBytesSent), writes \(tcpPacketsWritten), rtx \(tcpRetransmittedPackets), rst \(tcpResetsSent), closed \(tcpFlowsClosed)"
+        let base = "packets \(packetsRead), TCP \(tcpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows), SOCKS \(tcpSocksConnectAttempts)/\(tcpSocksConnectSuccesses)/\(tcpSocksConnectFailures), bytes c>u \(tcpUpstreamBytesSent), u>c \(tcpClientBytesSent), writes \(tcpPacketsWritten), rtx \(tcpRetransmittedPackets), rst \(tcpResetsSent), closed \(tcpFlowsClosed)"
+        let hasHevCounters = hevPacketsSentToTunnel > 0 || hevPacketsReceivedFromTunnel > 0 || hevBridgeWriteFailures > 0 || hevTunnelTxPackets > 0 || hevTunnelRxPackets > 0
+        if hasHevCounters {
+            return "\(base), HEV in/out \(hevPacketsSentToTunnel)/\(hevPacketsReceivedFromTunnel), HEV stats tx/rx \(hevTunnelTxPackets)/\(hevTunnelRxPackets), HEV bridge errors \(hevBridgeWriteFailures)"
+        }
+        return base
     }
 
     enum CodingKeys: String, CodingKey {
@@ -96,6 +110,15 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
         case tcpOutboundBufferOverflows
         case tcpWindowStalls
         case tcpUpstreamCloses
+        case hevPacketsSentToTunnel
+        case hevBytesSentToTunnel
+        case hevPacketsReceivedFromTunnel
+        case hevBytesReceivedFromTunnel
+        case hevBridgeWriteFailures
+        case hevTunnelTxPackets
+        case hevTunnelTxBytes
+        case hevTunnelRxPackets
+        case hevTunnelRxBytes
     }
 
     init(from decoder: Decoder) throws {
@@ -131,6 +154,15 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
         tcpOutboundBufferOverflows = try container.decodeIfPresent(UInt64.self, forKey: .tcpOutboundBufferOverflows) ?? 0
         tcpWindowStalls = try container.decodeIfPresent(UInt64.self, forKey: .tcpWindowStalls) ?? 0
         tcpUpstreamCloses = try container.decodeIfPresent(UInt64.self, forKey: .tcpUpstreamCloses) ?? 0
+        hevPacketsSentToTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevPacketsSentToTunnel) ?? 0
+        hevBytesSentToTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevBytesSentToTunnel) ?? 0
+        hevPacketsReceivedFromTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevPacketsReceivedFromTunnel) ?? 0
+        hevBytesReceivedFromTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevBytesReceivedFromTunnel) ?? 0
+        hevBridgeWriteFailures = try container.decodeIfPresent(UInt64.self, forKey: .hevBridgeWriteFailures) ?? 0
+        hevTunnelTxPackets = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelTxPackets) ?? 0
+        hevTunnelTxBytes = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelTxBytes) ?? 0
+        hevTunnelRxPackets = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelRxPackets) ?? 0
+        hevTunnelRxBytes = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelRxBytes) ?? 0
     }
 }
 
@@ -138,13 +170,21 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
 enum PacketTunnelConfigurationManager {
     static let localizedDescription = "blaze Packet Tunnel"
 
-    static func installOrUpdateConfiguration(httpPort: Int, socksPort: Int, excludedIPv4Addresses: [String] = []) async throws {
+    static func installOrUpdateConfiguration(
+        httpPort: Int,
+        socksPort: Int,
+        excludedIPv4Addresses: [String] = [],
+        packetEngine: String = "native",
+        hevLibraryDirectory: String? = nil,
+        hevUDPMode: String = "udp"
+    ) async throws {
         let manager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
         tunnelProtocol.providerBundleIdentifier = SystemExtensionController.extensionIdentifier
         tunnelProtocol.serverAddress = "blaze"
-        tunnelProtocol.providerConfiguration = [
+        var providerConfiguration: [String: Any] = [
             "mode": "tun2socks",
+            "packetEngine": packetEngine,
             "createdBy": "blaze",
             "httpHost": "127.0.0.1",
             "httpPort": httpPort,
@@ -157,8 +197,13 @@ enum PacketTunnelConfigurationManager {
             "enableUDPRelay": false,
             "enableProxySettings": false,
             "enableDNSNetworkFallback": false,
-            "enableIPv6Blackhole": true
+            "enableIPv6Blackhole": true,
+            "hevUDPMode": hevUDPMode
         ]
+        if let hevLibraryDirectory {
+            providerConfiguration["hevLibraryDirectory"] = hevLibraryDirectory
+        }
+        tunnelProtocol.providerConfiguration = providerConfiguration
 
         manager.localizedDescription = localizedDescription
         manager.protocolConfiguration = tunnelProtocol

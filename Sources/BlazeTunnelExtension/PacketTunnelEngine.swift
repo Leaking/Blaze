@@ -3,7 +3,13 @@ import Foundation
 @preconcurrency import NetworkExtension
 import os.log
 
+enum PacketTunnelEngineKind: String, Sendable {
+    case native
+    case hev
+}
+
 struct PacketTunnelRuntimeConfiguration {
+    var engineKind: PacketTunnelEngineKind
     var httpHost: String
     var httpPort: Int
     var socksHost: String
@@ -16,8 +22,12 @@ struct PacketTunnelRuntimeConfiguration {
     var enableProxySettings: Bool
     var enableDNSNetworkFallback: Bool
     var enableIPv6Blackhole: Bool
+    var hevLibraryDirectory: String?
+    var hevUDPMode: String
 
     init(providerConfiguration: [String: Any]?) {
+        let engineName = providerConfiguration?["packetEngine"] as? String ?? "native"
+        engineKind = PacketTunnelEngineKind(rawValue: engineName) ?? .native
         httpHost = providerConfiguration?["httpHost"] as? String ?? "127.0.0.1"
         httpPort = providerConfiguration?["httpPort"] as? Int ?? 19080
         socksHost = providerConfiguration?["socksHost"] as? String ?? "127.0.0.1"
@@ -31,6 +41,8 @@ struct PacketTunnelRuntimeConfiguration {
         enableProxySettings = providerConfiguration?["enableProxySettings"] as? Bool ?? false
         enableDNSNetworkFallback = providerConfiguration?["enableDNSNetworkFallback"] as? Bool ?? false
         enableIPv6Blackhole = providerConfiguration?["enableIPv6Blackhole"] as? Bool ?? true
+        hevLibraryDirectory = providerConfiguration?["hevLibraryDirectory"] as? String
+        hevUDPMode = providerConfiguration?["hevUDPMode"] as? String ?? "udp"
     }
 }
 
@@ -66,9 +78,24 @@ struct PacketTunnelDiagnostics: Codable, Equatable, Sendable {
     var tcpOutboundBufferOverflows: UInt64 = 0
     var tcpWindowStalls: UInt64 = 0
     var tcpUpstreamCloses: UInt64 = 0
+    var hevPacketsSentToTunnel: UInt64 = 0
+    var hevBytesSentToTunnel: UInt64 = 0
+    var hevPacketsReceivedFromTunnel: UInt64 = 0
+    var hevBytesReceivedFromTunnel: UInt64 = 0
+    var hevBridgeWriteFailures: UInt64 = 0
+    var hevTunnelTxPackets: UInt64 = 0
+    var hevTunnelTxBytes: UInt64 = 0
+    var hevTunnelRxPackets: UInt64 = 0
+    var hevTunnelRxBytes: UInt64 = 0
 }
 
-final class PacketTunnelEngine: @unchecked Sendable {
+protocol PacketTunnelRunning: AnyObject {
+    func handlePackets(_ packets: [Data], protocols: [NSNumber])
+    func stop()
+    func diagnosticsSnapshot() -> PacketTunnelDiagnostics
+}
+
+final class PacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.chenhuazhao.blaze.tunnel", category: "PacketTunnelEngine")
     private let packetFlow: NEPacketTunnelFlow
     private let configuration: PacketTunnelRuntimeConfiguration

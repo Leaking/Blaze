@@ -13,3 +13,4 @@ DerivedData/
 
 # Local build artifacts
 build/
+Vendor/HevSocks5Tunnel/macos-*/
