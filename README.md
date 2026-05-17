@@ -58,6 +58,11 @@ Sources used:
 - TCP endpoint reachability and latency checks for parsed proxy endpoints.
 - Local HTTP and SOCKS5 proxy listeners on `127.0.0.1` with plain HTTP forwarding, CONNECT tunneling, `skip-proxy`/`bypass-tun` direct bypass handling, rule-aware group resolution, HTTP/SOCKS5/Trojan upstream forwarding, `DIRECT`/`REJECT` handling, unsupported-upstream blocking, in-app request logging, and policy/rule hit counters.
 - macOS `networksetup` integration for enabling or disabling Web Proxy, Secure Web Proxy, and SOCKS Firewall Proxy against the app's local listener ports, plus read-only detection of available network service names, current system proxy status, and copyable command output.
+- Packet Tunnel/System Extension scaffold for transparent takeover using Apple's Network Extension framework.
+- Initial tun2socks-style PacketTunnelEngine with IPv4 TCP forwarding through the local SOCKS5 listener, fake-IP DNS mapping, TCP reassembly/retransmission/window handling, serialized packet writes, DNS AAAA/SVCB/HTTPS suppression, and non-DNS UDP rejection via ICMP unreachable.
+- IPv6 blackhole behavior while full IPv6 forwarding is incomplete: IPv6 traffic routed into the tunnel receives ICMPv6 destination unreachable instead of hanging silently.
+- Packet tunnel diagnostics exposed in Settings, including packet counters, DNS query counts, fake-IP TCP/UDP hits, UDP rejects, and active flow counts.
+- Fixed development scripts for guarded Blaze/Surge verification cycles, including automatic Surge restore watchdogs and `blaze://control/...` automation URLs for local listener control.
 - Traffic, DNS, and Logs work areas for request activity, route diagnostics, DNS-related profile settings, and local proxy event review.
 - Sanitized JSON export that redacts password, token, key, secret, certificate, and PSK-like fields.
 - Unit tests for parsing, rule matching, redaction, and local HTTP forwarding.
@@ -93,12 +98,49 @@ Notes for pasted subscription-style configs:
 - `skip-proxy` and `bypass-tun` entries are used by local listeners for direct bypass matching, including hostnames, wildcard domains, IPv4 CIDR, and IPv6 CIDR.
 - `encrypted-dns-server` values are parsed as General settings only; DNS hijack and encrypted DNS routing are not implemented.
 
+## Packet Tunnel Development
+
+The transparent path is intentionally split into two layers:
+
+- The main app owns profile parsing, local HTTP/SOCKS5 listeners, system proxy controls, and Packet Tunnel configuration.
+- The System Extension owns raw packet handling through `NEPacketTunnelFlow` and forwards supported IPv4 TCP flows to the local SOCKS5 listener.
+
+Current transparent behavior:
+
+- DNS A queries for routable domains are answered with fake IPs from `198.18.0.0/15`.
+- TCP connections to those fake IPs are mapped back to domains and forwarded through the local SOCKS5 listener.
+- DNS AAAA, SVCB, and HTTPS records are answered empty to avoid choosing unsupported IPv6 or alternate-service paths too early.
+- Non-DNS UDP receives ICMP unreachable by default, causing QUIC-capable clients to fall back to TCP.
+- IPv6 is not forwarded yet; the tunnel currently returns ICMPv6 unreachable so failures are explicit and fast.
+
+Useful verification commands:
+
+```bash
+swift test
+BLAZE_BUILD_NUMBER=28 ./scripts/build-app.sh
+codesign --verify --deep --strict --verbose=2 build/blaze.app
+./scripts/dev/net-probe.sh curl-blaze
+./scripts/dev/net-probe.sh curl-transparent
+./scripts/dev/blaze-control.sh status
+```
+
+For guarded local testing while Surge is still needed for developer connectivity, use:
+
+```bash
+./scripts/dev/surge-control.sh arm-watchdog 120
+./scripts/dev/blaze-dev-cycle.sh
+```
+
+The watchdog restores Surge System Proxy and Enhanced Mode without requiring Codex or ChatGPT connectivity. See [`docs/blaze-dev-loop.md`](docs/blaze-dev-loop.md) for the full workflow.
+
+Signing, entitlement, and notarization notes are tracked separately in [`docs/packet-tunnel-development.md`](docs/packet-tunnel-development.md) and [`docs/blaze-technical-principles.md`](docs/blaze-technical-principles.md).
+
 ## Not Implemented
 
 - No commercial software cracking, license bypass, binary patching, or DRM circumvention.
 - No private Surge app reverse engineering.
 - No automatic harvesting of local Surge profiles or credentials.
-- No Network Extension/VIF packet takeover.
+- No production-complete Surge-equivalent transparent takeover yet. Packet Tunnel support exists, but UDP relay is gated, IPv6 forwarding is not complete, and the TCP shim is still under active hardening.
 - No MITM certificate installation or HTTPS decryption.
 - No HTTP request capture database.
 - No JavaScript rewrite engine.

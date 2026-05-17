@@ -32,23 +32,37 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ipv4.excludedRoutes = excludedRoutes
         settings.ipv4Settings = ipv4
 
+        if configuration.enableIPv6Blackhole {
+            let ipv6 = NEIPv6Settings(addresses: ["fd7a:626c:617a:6500::2"], networkPrefixLengths: [128])
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+            ipv6.excludedRoutes = [
+                NEIPv6Route(destinationAddress: "::1", networkPrefixLength: 128),
+                NEIPv6Route(destinationAddress: "fe80::", networkPrefixLength: 10),
+                NEIPv6Route(destinationAddress: "fc00::", networkPrefixLength: 7),
+                NEIPv6Route(destinationAddress: "ff00::", networkPrefixLength: 8)
+            ]
+            settings.ipv6Settings = ipv6
+        }
+
         let dns = NEDNSSettings(servers: ["9.9.9.9", "1.1.1.1"])
         dns.matchDomains = [""]
         settings.dnsSettings = dns
 
-        let proxy = NEProxySettings()
-        proxy.httpEnabled = true
-        proxy.httpServer = NEProxyServer(address: configuration.httpHost, port: configuration.httpPort)
-        proxy.httpsEnabled = true
-        proxy.httpsServer = NEProxyServer(address: configuration.httpHost, port: configuration.httpPort)
-        proxy.excludeSimpleHostnames = true
-        proxy.exceptionList = [
-            "localhost",
-            "127.0.0.1",
-            "*.local",
-            "captive.apple.com"
-        ]
-        settings.proxySettings = proxy
+        if configuration.enableProxySettings {
+            let proxy = NEProxySettings()
+            proxy.httpEnabled = true
+            proxy.httpServer = NEProxyServer(address: configuration.httpHost, port: configuration.httpPort)
+            proxy.httpsEnabled = true
+            proxy.httpsServer = NEProxyServer(address: configuration.httpHost, port: configuration.httpPort)
+            proxy.excludeSimpleHostnames = true
+            proxy.exceptionList = [
+                "localhost",
+                "127.0.0.1",
+                "*.local",
+                "captive.apple.com"
+            ]
+            settings.proxySettings = proxy
+        }
 
         let engine = PacketTunnelEngine(packetFlow: packetFlow, configuration: configuration)
         self.engine = engine
@@ -75,7 +89,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        completionHandler?(Data("blaze-tunnel-ok".utf8))
+        let command = String(data: messageData, encoding: .utf8) ?? ""
+        switch command {
+        case "diagnostics":
+            guard let engine else {
+                completionHandler?(Data("{}".utf8))
+                return
+            }
+            completionHandler?(try? JSONEncoder().encode(engine.diagnosticsSnapshot()))
+        default:
+            completionHandler?(Data("blaze-tunnel-ok".utf8))
+        }
     }
 
     private func startPacketReadLoop() {

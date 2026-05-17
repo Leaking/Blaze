@@ -8,12 +8,15 @@ final class TCPOutboundSegmentTrackerTests: XCTestCase {
 
         XCTAssertTrue(tracker.record(sequenceNumber: 1_000, flags: [.syn, .ack], payload: Data(), sentAt: 0))
         XCTAssertTrue(tracker.record(sequenceNumber: 1_001, flags: [.push, .ack], payload: Data("hello".utf8), sentAt: 0))
+        XCTAssertEqual(tracker.inFlightSequenceLength, 6)
 
         XCTAssertEqual(tracker.acknowledge(1_001), .progress)
         XCTAssertFalse(tracker.isEmpty)
+        XCTAssertEqual(tracker.inFlightSequenceLength, 5)
 
         XCTAssertEqual(tracker.acknowledge(1_006), .progress)
         XCTAssertTrue(tracker.isEmpty)
+        XCTAssertEqual(tracker.inFlightSequenceLength, 0)
     }
 
     func testPartialAcknowledgmentTrimsRetransmittedPayload() {
@@ -21,6 +24,7 @@ final class TCPOutboundSegmentTrackerTests: XCTestCase {
 
         XCTAssertTrue(tracker.record(sequenceNumber: 50, flags: [.push, .ack], payload: Data("abcdef".utf8), sentAt: 0))
         XCTAssertEqual(tracker.acknowledge(53), .progress)
+        XCTAssertEqual(tracker.inFlightSequenceLength, 3)
 
         let retransmission = tracker.nextDuplicateAckRetransmission(at: 1)
         XCTAssertEqual(retransmission?.sequenceNumber, 53)
@@ -44,11 +48,12 @@ final class TCPOutboundSegmentTrackerTests: XCTestCase {
     func testTimedRetransmissionWaitsForTimeout() {
         var tracker = TCPOutboundSegmentTracker(maxRetainedBytes: 1024)
 
-        XCTAssertTrue(tracker.record(sequenceNumber: 90, flags: [.push, .ack], payload: Data("xyz".utf8), sentAt: 0))
+        XCTAssertTrue(tracker.record(sequenceNumber: 90, flags: [.push, .ack], options: Data([1, 1]), payload: Data("xyz".utf8), sentAt: 0))
         XCTAssertNil(tracker.nextTimedOutRetransmission(at: 1_499_999_999))
 
         let retransmission = tracker.nextTimedOutRetransmission(at: 1_500_000_000)
         XCTAssertEqual(retransmission?.sequenceNumber, 90)
+        XCTAssertEqual(retransmission?.options, Data([1, 1]))
         XCTAssertEqual(retransmission?.payload, Data("xyz".utf8))
     }
 

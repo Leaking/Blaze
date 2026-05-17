@@ -93,6 +93,7 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var packetTunnelTransitioning = false
     @Published private(set) var packetTunnelHostEntitlementText = SystemExtensionController.hostEntitlementStatusText
     @Published private(set) var packetTunnelExcludedIPv4Summary = "Not computed"
+    @Published private(set) var packetTunnelDiagnosticsText = "Not queried"
 
     private let probe = LatencyProbe()
     private let systemExtensionController = SystemExtensionController()
@@ -829,6 +830,11 @@ final class WorkbenchStore: ObservableObject {
             packetTunnelStatusText = snapshot.text
             packetTunnelConnected = snapshot.isConnected
             packetTunnelTransitioning = snapshot.isTransitioning
+            if snapshot.isConnected {
+                await refreshPacketTunnelDiagnostics(updateStatusText: false)
+            } else {
+                packetTunnelDiagnosticsText = "Tunnel is not connected"
+            }
             if updateStatusText {
                 statusText = "Packet tunnel status: \(snapshot.text)"
             }
@@ -836,8 +842,28 @@ final class WorkbenchStore: ObservableObject {
             packetTunnelStatusText = "Not configured"
             packetTunnelConnected = false
             packetTunnelTransitioning = false
+            packetTunnelDiagnosticsText = "Unavailable"
             if updateStatusText {
                 statusText = "Packet tunnel status unavailable: \(error)"
+            }
+        }
+    }
+
+    func refreshPacketTunnelDiagnostics() async {
+        await refreshPacketTunnelDiagnostics(updateStatusText: true)
+    }
+
+    private func refreshPacketTunnelDiagnostics(updateStatusText: Bool) async {
+        do {
+            let snapshot = try await PacketTunnelConfigurationManager.diagnosticsSnapshot()
+            packetTunnelDiagnosticsText = snapshot.summary
+            if updateStatusText {
+                statusText = "Packet tunnel diagnostics: \(snapshot.summary)"
+            }
+        } catch {
+            packetTunnelDiagnosticsText = "Unavailable: \(error)"
+            if updateStatusText {
+                statusText = "Packet tunnel diagnostics unavailable: \(error)"
             }
         }
     }
@@ -857,6 +883,29 @@ final class WorkbenchStore: ObservableObject {
 
         guard !commands.isEmpty else { return }
         try? Self.runNetworkSetupSynchronously(commands)
+    }
+
+    func handleAutomationURL(_ url: URL) {
+        guard url.scheme == "blaze", url.host == "control" else { return }
+        let action = url.pathComponents.dropFirst().first ?? ""
+
+        switch action {
+        case "start-listeners":
+            Task { await startLocalProxyStack() }
+        case "stop-listeners":
+            Task {
+                await stopLocalProxyServer()
+                await stopLocalSocksServer()
+            }
+        case "start-tunnel":
+            Task { await startPacketTunnel() }
+        case "stop-tunnel":
+            Task { await stopPacketTunnel() }
+        case "refresh-tunnel":
+            Task { await refreshPacketTunnelStatus() }
+        default:
+            statusText = "Unknown automation URL action: \(action)"
+        }
     }
 
     private func captureSystemProxyRestorePointIfNeeded() async {

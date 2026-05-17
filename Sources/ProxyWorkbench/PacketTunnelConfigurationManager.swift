@@ -4,6 +4,8 @@ import Foundation
 enum PacketTunnelConfigurationError: Error, CustomStringConvertible {
     case missingProtocolConfiguration
     case managerNotFound
+    case providerSessionUnavailable
+    case emptyProviderResponse
 
     var description: String {
         switch self {
@@ -11,6 +13,10 @@ enum PacketTunnelConfigurationError: Error, CustomStringConvertible {
             "Packet tunnel protocol configuration is missing"
         case .managerNotFound:
             "Packet tunnel configuration was not found"
+        case .providerSessionUnavailable:
+            "Packet tunnel provider session is unavailable"
+        case .emptyProviderResponse:
+            "Packet tunnel provider returned no response"
         }
     }
 }
@@ -19,6 +25,28 @@ struct PacketTunnelStatusSnapshot: Hashable, Sendable {
     var text: String
     var isConnected: Bool
     var isTransitioning: Bool
+}
+
+struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
+    var packetsRead: UInt64
+    var ipv4Packets: UInt64
+    var ipv6Packets: UInt64
+    var unknownPackets: UInt64
+    var tcpPackets: UInt64
+    var udpPackets: UInt64
+    var dnsQueries: UInt64
+    var fakeIPTCPDestinations: UInt64
+    var fakeIPUDPDestinations: UInt64
+    var udpRelayedPackets: UInt64
+    var udpRejectedPackets: UInt64
+    var ipv6BlackholedPackets: UInt64
+    var activeTCPFlows: Int
+    var activeUDPFlows: Int
+    var fakeIPMappings: Int
+
+    var summary: String {
+        "packets \(packetsRead), IPv4 \(ipv4Packets), IPv6 \(ipv6Packets), TCP \(tcpPackets), UDP \(udpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows)"
+    }
 }
 
 @MainActor
@@ -41,7 +69,10 @@ enum PacketTunnelConfigurationManager {
             "excludedIPv4Addresses": excludedIPv4Addresses,
             "suppressIPv6DNS": true,
             "enableFakeIPDNS": true,
-            "enableUDPRelay": false
+            "enableUDPRelay": false,
+            "enableProxySettings": false,
+            "enableDNSNetworkFallback": false,
+            "enableIPv6Blackhole": true
         ]
 
         manager.localizedDescription = localizedDescription
@@ -76,6 +107,29 @@ enum PacketTunnelConfigurationManager {
             isConnected: status == .connected,
             isTransitioning: status == .connecting || status == .reasserting || status == .disconnecting
         )
+    }
+
+    static func diagnosticsSnapshot() async throws -> PacketTunnelDiagnosticsSnapshot {
+        let manager = try await loadExistingManager()
+        try await loadFromPreferences(manager)
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            throw PacketTunnelConfigurationError.providerSessionUnavailable
+        }
+
+        let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            do {
+                try session.sendProviderMessage(Data("diagnostics".utf8)) { responseData in
+                    guard let responseData, !responseData.isEmpty else {
+                        continuation.resume(throwing: PacketTunnelConfigurationError.emptyProviderResponse)
+                        return
+                    }
+                    continuation.resume(returning: responseData)
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        return try JSONDecoder().decode(PacketTunnelDiagnosticsSnapshot.self, from: response)
     }
 
     private static func loadOrCreateManager() async throws -> NETunnelProviderManager {

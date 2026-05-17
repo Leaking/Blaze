@@ -17,6 +17,9 @@ struct BlazeApp: App {
                 .environmentObject(store)
                 .tint(.indigo)
                 .frame(minWidth: 1080, minHeight: 720)
+                .onOpenURL { url in
+                    store.handleAutomationURL(url)
+                }
                 .task {
                     appDelegate.store = store
                     store.loadInitialProfile()

@@ -8,12 +8,22 @@ final class DNSOverHTTPSProxy: @unchecked Sendable {
     private let session: URLSession
     private let suppressIPv6DNS: Bool
     private let enableFakeIPDNS: Bool
+    private let enableNetworkFallback: Bool
     private let fakeIPStore: DNSFakeIPStore
 
-    init(url: URL, httpProxyHost: String, httpProxyPort: Int, suppressIPv6DNS: Bool, enableFakeIPDNS: Bool, fakeIPStore: DNSFakeIPStore) {
+    init(
+        url: URL,
+        httpProxyHost: String,
+        httpProxyPort: Int,
+        suppressIPv6DNS: Bool,
+        enableFakeIPDNS: Bool,
+        enableNetworkFallback: Bool,
+        fakeIPStore: DNSFakeIPStore
+    ) {
         self.url = url
         self.suppressIPv6DNS = suppressIPv6DNS
         self.enableFakeIPDNS = enableFakeIPDNS
+        self.enableNetworkFallback = enableNetworkFallback
         self.fakeIPStore = fakeIPStore
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 8
@@ -30,38 +40,51 @@ final class DNSOverHTTPSProxy: @unchecked Sendable {
     }
 
     func handleQuery(ipv4: IPv4Packet, udp: UDPPacket, packetWriter: @escaping @Sendable (Data) -> Void) {
-        if enableFakeIPDNS,
-           let question = DNSMessage.singleQuestion(in: udp.payload),
-           question.type == 1,
-           question.recordClass == 1,
-           DNSMessage.shouldSynthesizeFakeIP(for: question.name) {
-            let fakeAddress = fakeIPStore.address(for: question.name)
-            if let response = DNSMessage.fakeAResponse(for: udp.payload, question: question, address: fakeAddress) {
-                logger.debug("Synthesizing fake A answer \(IPv4AddressFormatter.string(from: fakeAddress), privacy: .public) for \(question.name, privacy: .public)")
-                let packet = IPv4PacketFactory.udp(
-                    sourceAddress: ipv4.destinationAddress,
-                    destinationAddress: ipv4.sourceAddress,
-                    sourcePort: udp.destinationPort,
-                    destinationPort: udp.sourcePort,
-                    payload: response
+        if let question = DNSMessage.singleQuestion(in: udp.payload) {
+            if enableFakeIPDNS,
+               question.type == DNSMessage.RecordType.a,
+               question.recordClass == 1,
+               DNSMessage.shouldSynthesizeFakeIP(for: question.name) {
+                let fakeAddress = fakeIPStore.address(for: question.name)
+                if let response = DNSMessage.fakeAResponse(for: udp.payload, question: question, address: fakeAddress) {
+                    logger.debug("Synthesizing fake A answer \(IPv4AddressFormatter.string(from: fakeAddress), privacy: .public) for \(question.name, privacy: .public)")
+                    sendDNSResponse(
+                        response,
+                        originalIPv4: ipv4,
+                        originalUDP: udp,
+                        packetWriter: packetWriter
+                    )
+                    return
+                }
+            }
+
+            if DNSMessage.shouldAnswerEmptyLocally(
+                question: question,
+                suppressIPv6DNS: suppressIPv6DNS,
+                enableFakeIPDNS: enableFakeIPDNS
+            ),
+               let response = DNSMessage.emptyNoErrorResponse(for: udp.payload) {
+                logger.debug("Suppressing DNS type \(question.type, privacy: .public) answer for \(question.name, privacy: .public)")
+                sendDNSResponse(
+                    response,
+                    originalIPv4: ipv4,
+                    originalUDP: udp,
+                    packetWriter: packetWriter
                 )
-                packetWriter(packet)
                 return
             }
         }
 
-        if suppressIPv6DNS,
-           DNSMessage.singleQuestion(in: udp.payload)?.type == 28,
-           let response = DNSMessage.emptyNoErrorResponse(for: udp.payload) {
-            logger.debug("Suppressing AAAA DNS answer while IPv6 packet forwarding is disabled")
-            let packet = IPv4PacketFactory.udp(
-                sourceAddress: ipv4.destinationAddress,
-                destinationAddress: ipv4.sourceAddress,
-                sourcePort: udp.destinationPort,
-                destinationPort: udp.sourcePort,
-                payload: response
+        guard enableNetworkFallback else {
+            logger.debug("Answering DNS query locally with empty fallback because network fallback is disabled")
+            sendEmptyFallbackResponse(
+                for: udp.payload,
+                sourceAddress: ipv4.sourceAddress,
+                destinationAddress: ipv4.destinationAddress,
+                sourcePort: udp.sourcePort,
+                destinationPort: udp.destinationPort,
+                packetWriter: packetWriter
             )
-            packetWriter(packet)
             return
         }
 
@@ -79,10 +102,26 @@ final class DNSOverHTTPSProxy: @unchecked Sendable {
         session.dataTask(with: request) { data, _, error in
             if let error {
                 self.logger.error("DoH query failed: \(String(describing: error), privacy: .public)")
+                self.sendEmptyFallbackResponse(
+                    for: udp.payload,
+                    sourceAddress: sourceAddress,
+                    destinationAddress: destinationAddress,
+                    sourcePort: sourcePort,
+                    destinationPort: destinationPort,
+                    packetWriter: packetWriter
+                )
                 return
             }
             guard let data, !data.isEmpty else {
                 self.logger.error("DoH query returned no response bytes")
+                self.sendEmptyFallbackResponse(
+                    for: udp.payload,
+                    sourceAddress: sourceAddress,
+                    destinationAddress: destinationAddress,
+                    sourcePort: sourcePort,
+                    destinationPort: destinationPort,
+                    packetWriter: packetWriter
+                )
                 return
             }
             self.logger.debug("DoH query answered \(data.count, privacy: .public) bytes")
@@ -95,6 +134,41 @@ final class DNSOverHTTPSProxy: @unchecked Sendable {
             )
             packetWriter(packet)
         }.resume()
+    }
+
+    private func sendEmptyFallbackResponse(
+        for query: Data,
+        sourceAddress: UInt32,
+        destinationAddress: UInt32,
+        sourcePort: UInt16,
+        destinationPort: UInt16,
+        packetWriter: @escaping @Sendable (Data) -> Void
+    ) {
+        guard let response = DNSMessage.emptyNoErrorResponse(for: query) else { return }
+        let packet = IPv4PacketFactory.udp(
+            sourceAddress: destinationAddress,
+            destinationAddress: sourceAddress,
+            sourcePort: destinationPort,
+            destinationPort: sourcePort,
+            payload: response
+        )
+        packetWriter(packet)
+    }
+
+    private func sendDNSResponse(
+        _ response: Data,
+        originalIPv4: IPv4Packet,
+        originalUDP: UDPPacket,
+        packetWriter: @escaping @Sendable (Data) -> Void
+    ) {
+        let packet = IPv4PacketFactory.udp(
+            sourceAddress: originalIPv4.destinationAddress,
+            destinationAddress: originalIPv4.sourceAddress,
+            sourcePort: originalUDP.destinationPort,
+            destinationPort: originalUDP.sourcePort,
+            payload: response
+        )
+        packetWriter(packet)
     }
 }
 
@@ -155,6 +229,13 @@ final class DNSFakeIPStore: @unchecked Sendable {
         }
     }
 
+    func mappingCount(now: Date = Date()) -> Int {
+        queue.sync {
+            removeExpiredLocked(now: now)
+            return addressToRecord.count
+        }
+    }
+
     static func isFakeIP(_ address: UInt32) -> Bool {
         (address & 0xFFFE0000) == 0xC6120000
     }
@@ -207,6 +288,13 @@ final class DNSFakeIPStore: @unchecked Sendable {
 }
 
 enum DNSMessage {
+    enum RecordType {
+        static let a: UInt16 = 1
+        static let aaaa: UInt16 = 28
+        static let svcb: UInt16 = 64
+        static let https: UInt16 = 65
+    }
+
     struct Question: Equatable {
         var name: String
         var type: UInt16
@@ -278,6 +366,16 @@ enum DNSMessage {
         if lowercased.hasSuffix(".local") { return false }
         if lowercased.hasSuffix(".arpa") { return false }
         return true
+    }
+
+    static func shouldAnswerEmptyLocally(question: Question, suppressIPv6DNS: Bool, enableFakeIPDNS: Bool) -> Bool {
+        if suppressIPv6DNS, question.type == RecordType.aaaa {
+            return true
+        }
+        if enableFakeIPDNS, question.type == RecordType.svcb || question.type == RecordType.https {
+            return true
+        }
+        return false
     }
 
     static func singleQuestion(in data: Data) -> Question? {

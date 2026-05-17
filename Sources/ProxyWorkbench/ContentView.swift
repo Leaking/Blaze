@@ -2932,11 +2932,17 @@ struct SettingsView: View {
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
+                        Button {
+                            Task { await store.refreshPacketTunnelDiagnostics() }
+                        } label: {
+                            Label("Diagnostics", systemImage: "chart.bar.doc.horizontal")
+                        }
                     }
                     CompatibilityRow(name: "Extension ID", value: SystemExtensionController.extensionIdentifier)
                     CompatibilityRow(name: "Host entitlement", value: store.packetTunnelHostEntitlementText)
                     CompatibilityRow(name: "Status", value: store.packetTunnelStatusText)
                     CompatibilityRow(name: "Bypass", value: store.packetTunnelExcludedIPv4Summary)
+                    CompatibilityRow(name: "Diagnostics", value: store.packetTunnelDiagnosticsText)
                     CompatibilityRow(name: "Mode", value: "Transparent IPv4 TCP via local SOCKS5; DNS fake-IP; UDP relay gated; AAAA suppressed until IPv6 forwarding lands")
                 }
             }
