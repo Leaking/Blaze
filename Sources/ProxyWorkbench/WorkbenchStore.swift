@@ -53,7 +53,10 @@ struct ConnectivityTestResult: Identifiable, Hashable, Sendable {
         if transport == "Policy", name.hasSuffix(" Route") {
             return false
         }
-        if transport == "HTTP Fetch", name != "Google" {
+        if transport == "HTTP CONNECT" || transport == "HTTP Fetch" {
+            return false
+        }
+        if transport == "SOCKS5 CONNECT", name != "Google" {
             return false
         }
         return true
