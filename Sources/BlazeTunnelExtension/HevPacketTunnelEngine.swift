@@ -31,6 +31,9 @@ enum HevPacketTunnelError: Error, CustomStringConvertible, LocalizedError {
 }
 
 final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
+    private static let bridgeBufferSize: Int32 = 1 << 20
+    private static let bridgeWriteTimeoutMilliseconds: Int32 = 250
+
     private let logger = Logger(subsystem: "com.chenhuazhao.blaze.tunnel", category: "HevPacketTunnelEngine")
     private let packetFlow: NEPacketTunnelFlow
     private let configuration: PacketTunnelRuntimeConfiguration
@@ -64,6 +67,10 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
             bridgeFileDescriptor = fileDescriptors[0]
             hevFileDescriptor = fileDescriptors[1]
             hevConfigData = try HevSocks5TunnelConfiguration(configuration: configuration).data()
+            Self.setSocketBufferSize(fileDescriptor: bridgeFileDescriptor, option: SO_SNDBUF, size: Self.bridgeBufferSize)
+            Self.setSocketBufferSize(fileDescriptor: bridgeFileDescriptor, option: SO_RCVBUF, size: Self.bridgeBufferSize)
+            Self.setSocketBufferSize(fileDescriptor: hevFileDescriptor, option: SO_SNDBUF, size: Self.bridgeBufferSize)
+            Self.setSocketBufferSize(fileDescriptor: hevFileDescriptor, option: SO_RCVBUF, size: Self.bridgeBufferSize)
             try Self.setNonBlocking(fileDescriptor: bridgeFileDescriptor)
             startOutputReadSource()
             startHevTunnel()
@@ -199,11 +206,18 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
         }
 
         let packet = Data(buffer[4..<byteCount])
+        guard Self.protocolFamily(for: packet) == protocolNumber else {
+            recordBridgeWriteFailure()
+            return
+        }
+
         diagnosticsQueue.async { [packetCount = UInt64(1), byteCount = UInt64(packet.count), weak self] in
             self?.diagnostics.hevPacketsReceivedFromTunnel &+= packetCount
             self?.diagnostics.hevBytesReceivedFromTunnel &+= byteCount
         }
-        _ = packetFlow.writePackets([packet], withProtocols: [NSNumber(value: protocolNumber)])
+        if !packetFlow.writePackets([packet], withProtocols: [NSNumber(value: protocolNumber)]) {
+            recordBridgeWriteFailure()
+        }
     }
 
     private func writePacketToHev(_ packet: Data, protocolNumber: Int32) {
@@ -222,12 +236,7 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
         }
         frame.append(packet)
 
-        let sent = frame.withUnsafeBytes { rawBuffer -> Int in
-            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
-            return send(bridgeFileDescriptor, baseAddress, rawBuffer.count, 0)
-        }
-
-        if sent == frame.count {
+        if sendFrameToHev(frame) {
             diagnosticsQueue.async { [packetBytes = UInt64(packet.count), weak self] in
                 self?.diagnostics.hevPacketsSentToTunnel &+= 1
                 self?.diagnostics.hevBytesSentToTunnel &+= packetBytes
@@ -235,6 +244,67 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
         } else {
             recordBridgeWriteFailure()
         }
+    }
+
+    private func sendFrameToHev(_ frame: Data) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(Self.bridgeWriteTimeoutMilliseconds) * 1_000_000
+
+        while !isStopped {
+            let result = frame.withUnsafeBytes { rawBuffer -> (sent: Int, code: Int32) in
+                guard let baseAddress = rawBuffer.baseAddress else { return (-1, EINVAL) }
+                let sent = send(bridgeFileDescriptor, baseAddress, rawBuffer.count, 0)
+                return (sent, sent < 0 ? errno : 0)
+            }
+
+            if result.sent == frame.count {
+                return true
+            }
+            if result.sent >= 0 {
+                logger.error("Partial HEV bridge datagram write: \(result.sent, privacy: .public)/\(frame.count, privacy: .public)")
+                return false
+            }
+
+            switch result.code {
+            case EINTR:
+                continue
+            case EAGAIN, EWOULDBLOCK:
+                guard waitForBridgeWritable(until: deadline) else {
+                    logger.error("Timed out waiting for HEV bridge write capacity")
+                    return false
+                }
+            default:
+                logger.error("Failed writing HEV input bridge: errno \(result.code, privacy: .public)")
+                return false
+            }
+        }
+
+        return false
+    }
+
+    private func waitForBridgeWritable(until deadline: UInt64) -> Bool {
+        while !isStopped {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return false }
+            let remainingMilliseconds = max(1, min(Int(Int32.max), Int((deadline - now) / 1_000_000)))
+            var descriptor = pollfd(fd: bridgeFileDescriptor, events: Int16(POLLOUT), revents: 0)
+            let ready = poll(&descriptor, 1, Int32(remainingMilliseconds))
+
+            if ready > 0 {
+                if (descriptor.revents & Int16(POLLOUT)) != 0 {
+                    return true
+                }
+                if (descriptor.revents & Int16(POLLERR | POLLHUP | POLLNVAL)) != 0 {
+                    return false
+                }
+            } else if ready == 0 {
+                return false
+            } else if errno != EINTR {
+                return false
+            }
+        }
+
+        return false
     }
 
     private func recordIngress(packet: Data, protocolNumber: Int32) {
@@ -305,10 +375,15 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
             throw HevPacketTunnelError.socketPairFailed(errno: errno)
         }
     }
+
+    private static func setSocketBufferSize(fileDescriptor: Int32, option: Int32, size: Int32) {
+        var value = size
+        _ = setsockopt(fileDescriptor, SOL_SOCKET, option, &value, socklen_t(MemoryLayout<Int32>.size))
+    }
 }
 
 private struct HevSocks5TunnelConfiguration {
-    private static let mapDNSAddress = "198.19.0.1"
+    private static let mapDNSAddress = PacketTunnelRuntimeConfiguration.hevMapDNSServer
     private static let mapDNSNetwork = "198.18.0.0"
     private static let mapDNSNetmask = "255.255.0.0"
     private let configuration: PacketTunnelRuntimeConfiguration

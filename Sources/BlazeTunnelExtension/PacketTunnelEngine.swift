@@ -9,6 +9,10 @@ enum PacketTunnelEngineKind: String, Sendable {
 }
 
 struct PacketTunnelRuntimeConfiguration {
+    static let nativeVirtualDNSServer = "198.18.0.2"
+    static let hevMapDNSServer = "198.19.0.1"
+    static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+
     var engineKind: PacketTunnelEngineKind
     var httpHost: String
     var httpPort: Int
@@ -26,23 +30,69 @@ struct PacketTunnelRuntimeConfiguration {
     var hevUDPMode: String
 
     init(providerConfiguration: [String: Any]?) {
-        let engineName = providerConfiguration?["packetEngine"] as? String ?? "native"
+        let engineName = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
         engineKind = PacketTunnelEngineKind(rawValue: engineName) ?? .native
-        httpHost = providerConfiguration?["httpHost"] as? String ?? "127.0.0.1"
-        httpPort = providerConfiguration?["httpPort"] as? Int ?? 19080
-        socksHost = providerConfiguration?["socksHost"] as? String ?? "127.0.0.1"
-        socksPort = providerConfiguration?["socksPort"] as? Int ?? 19081
-        let dnsURL = providerConfiguration?["dnsOverHTTPSURL"] as? String ?? "https://1.1.1.1/dns-query"
+        httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
+        httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
+        socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
+        socksPort = Self.intValue(providerConfiguration?["socksPort"], defaultValue: 19081)
+        let dnsURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
         dnsOverHTTPSURL = URL(string: dnsURL) ?? URL(string: "https://1.1.1.1/dns-query")!
-        excludedIPv4Addresses = providerConfiguration?["excludedIPv4Addresses"] as? [String] ?? []
-        suppressIPv6DNS = providerConfiguration?["suppressIPv6DNS"] as? Bool ?? true
-        enableFakeIPDNS = providerConfiguration?["enableFakeIPDNS"] as? Bool ?? true
-        enableUDPRelay = providerConfiguration?["enableUDPRelay"] as? Bool ?? false
-        enableProxySettings = providerConfiguration?["enableProxySettings"] as? Bool ?? false
-        enableDNSNetworkFallback = providerConfiguration?["enableDNSNetworkFallback"] as? Bool ?? false
-        enableIPv6Blackhole = providerConfiguration?["enableIPv6Blackhole"] as? Bool ?? true
-        hevLibraryDirectory = providerConfiguration?["hevLibraryDirectory"] as? String
-        hevUDPMode = providerConfiguration?["hevUDPMode"] as? String ?? "udp"
+        excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
+        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
+        enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
+        enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
+        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+    }
+
+    var tunnelDNSServers: [String] {
+        guard enableFakeIPDNS else {
+            return Self.fallbackDNSServers
+        }
+
+        switch engineKind {
+        case .native:
+            return [Self.nativeVirtualDNSServer]
+        case .hev:
+            return [Self.hevMapDNSServer]
+        }
+    }
+
+    private static func stringValue(_ value: Any?, defaultValue: String) -> String {
+        optionalStringValue(value) ?? defaultValue
+    }
+
+    private static func optionalStringValue(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func intValue(_ value: Any?, defaultValue: Int) -> Int {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return defaultValue
+    }
+
+    private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return defaultValue
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        (value as? [String]) ?? []
     }
 }
 

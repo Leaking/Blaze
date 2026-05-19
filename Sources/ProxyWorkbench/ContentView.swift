@@ -1,4 +1,5 @@
 import ProxyWorkbenchCore
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,6 +11,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
     case profiles = "Profiles"
     case traffic = "Traffic"
     case dns = "DNS"
+    case tunnel = "Tunnel"
     case tests = "Tests"
     case logs = "Logs"
     case settings = "Settings"
@@ -25,6 +27,7 @@ enum WorkbenchSection: String, CaseIterable, Identifiable {
         case .profiles: "person.crop.rectangle.stack"
         case .traffic: "waveform.path.ecg.rectangle"
         case .dns: "globe.desk"
+        case .tunnel: "shield.lefthalf.filled"
         case .tests: "checklist"
         case .logs: "doc.text.magnifyingglass"
         case .settings: "gearshape"
@@ -176,6 +179,9 @@ struct CommandPaletteView: View {
             WorkbenchCommand(title: "Go to Traffic", subtitle: "\(store.proxyEvents.count) captured requests", systemImage: WorkbenchSection.traffic.icon, keywords: "traffic metrics activity") {
                 selection = .traffic
             },
+            WorkbenchCommand(title: "Go to Tunnel", subtitle: store.packetTunnelStatusText, systemImage: WorkbenchSection.tunnel.icon, keywords: "packet tunnel transparent dns hev tun debug") {
+                selection = .tunnel
+            },
             WorkbenchCommand(title: "Go to Tests", subtitle: "\(store.connectivityTestResults.count) connectivity results", systemImage: WorkbenchSection.tests.icon, keywords: "diagnostics connectivity google baidu socks http") {
                 selection = .tests
             }
@@ -326,6 +332,8 @@ struct DetailView: View {
                     TrafficView()
                 case .dns:
                     DNSView()
+                case .tunnel:
+                    TunnelDebugView()
                 case .tests:
                     TestsView()
                 case .logs:
@@ -2591,6 +2599,206 @@ struct DNSView: View {
     }
 }
 
+struct TunnelDebugView: View {
+    @EnvironmentObject private var store: WorkbenchStore
+
+    private var configuration: PacketTunnelConfigurationSnapshot? {
+        store.packetTunnelConfigurationSnapshot
+    }
+
+    private var diagnostics: PacketTunnelDiagnosticsSnapshot? {
+        store.packetTunnelDiagnosticsSnapshot
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                Header(title: "Tunnel Debug", subtitle: store.packetTunnelDebugSubtitle)
+                Spacer()
+                Button {
+                    Task { await store.refreshPacketTunnelConfiguration() }
+                } label: {
+                    Label("Config", systemImage: "gearshape")
+                }
+                Button {
+                    Task { await store.refreshPacketTunnelStatus() }
+                } label: {
+                    Label("Status", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    Task { await store.refreshPacketTunnelDiagnostics() }
+                } label: {
+                    Label("Counters", systemImage: "chart.bar.doc.horizontal")
+                }
+            }
+
+            SectionPanel(title: "Transparent Path", icon: "point.3.connected.trianglepath.dotted") {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
+                    CompactStat(title: "Takeover", value: store.packetTunnelConnected ? "Packet Tunnel" : store.packetTunnelStatusText, icon: "shield.lefthalf.filled")
+                    CompactStat(title: "Engine", value: configuration?.engineDescription ?? "Unknown", icon: "cpu")
+                    CompactStat(title: "Tunnel DNS", value: configuration?.tunnelDNSServers.joined(separator: ", ") ?? "Unknown", icon: "globe.desk")
+                    CompactStat(title: "Local SOCKS5", value: configuration.map { "\($0.socksHost):\($0.socksPort)" } ?? "Unknown", icon: "point.3.connected.trianglepath.dotted")
+                    CompactStat(title: "Fake-IP", value: configuration.map { $0.enableFakeIPDNS ? "Enabled" : "Disabled" } ?? "Unknown", icon: "number")
+                    CompactStat(title: "Upstream Bypass", value: configuration.map { "\($0.excludedIPv4Addresses.count) addresses" } ?? "Unknown", icon: "arrow.triangle.branch")
+                }
+            }
+
+            SectionPanel(title: "Data Plane Health", icon: "waveform.path.ecg.rectangle") {
+                VStack(alignment: .leading, spacing: 10) {
+                    TunnelStageRow(
+                        title: "Ingress packets",
+                        value: diagnostics.map { "\($0.packetsRead) packets, IPv4 \($0.ipv4Packets), IPv6 \($0.ipv6Packets)" } ?? "No counters",
+                        state: diagnostics.map { $0.packetsRead > 0 ? .good : .warning } ?? .idle
+                    )
+                    TunnelStageRow(
+                        title: "DNS capture",
+                        value: diagnostics.map { "\($0.dnsQueries) queries, fake-IP TCP \($0.fakeIPTCPDestinations)" } ?? "No counters",
+                        state: diagnostics.map { $0.dnsQueries > 0 ? .good : .warning } ?? .idle
+                    )
+                    TunnelStageRow(
+                        title: "TCP to SOCKS5",
+                        value: diagnostics.map { "\($0.tcpSocksConnectAttempts) attempts, \($0.tcpSocksConnectSuccesses) ok, \($0.tcpSocksConnectFailures) failed" } ?? "No counters",
+                        state: diagnostics.map { $0.tcpSocksConnectFailures == 0 && $0.tcpSocksConnectSuccesses > 0 ? .good : ($0.tcpSocksConnectFailures > 0 ? .bad : .warning) } ?? .idle
+                    )
+                    TunnelStageRow(
+                        title: "Return packets",
+                        value: diagnostics.map { "\($0.tcpPacketsWritten) writes, \($0.tcpRetransmittedPackets) retransmits, \($0.tcpResetsSent) resets" } ?? "No counters",
+                        state: diagnostics.map { $0.tcpResetsSent == 0 && $0.tcpPacketsWritten > 0 ? .good : ($0.tcpResetsSent > 0 ? .bad : .warning) } ?? .idle
+                    )
+                }
+            }
+
+            SectionPanel(title: "Packet Counters", icon: "number.square") {
+                if let diagnostics {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                        CompactStat(title: "TCP Packets", value: "\(diagnostics.tcpPackets)", icon: "arrow.left.arrow.right")
+                        CompactStat(title: "UDP Packets", value: "\(diagnostics.udpPackets)", icon: "circle.grid.cross")
+                        CompactStat(title: "Client to Upstream", value: Self.byteText(diagnostics.tcpUpstreamBytesSent), icon: "arrow.up")
+                        CompactStat(title: "Upstream to Client", value: Self.byteText(diagnostics.tcpClientBytesSent), icon: "arrow.down")
+                        CompactStat(title: "Active TCP", value: "\(diagnostics.activeTCPFlows)", icon: "point.3.filled.connected.trianglepath.dotted")
+                        CompactStat(title: "Fake-IP Mappings", value: "\(diagnostics.fakeIPMappings)", icon: "list.bullet.rectangle")
+                        CompactStat(title: "UDP Relay", value: "\(diagnostics.udpRelayedPackets) relayed / \(diagnostics.udpRejectedPackets) rejected", icon: "arrow.triangle.2.circlepath")
+                        CompactStat(title: "IPv6 Blackhole", value: "\(diagnostics.ipv6BlackholedPackets)", icon: "nosign")
+                    }
+                } else {
+                    Text(store.packetTunnelDiagnosticsText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
+                }
+            }
+
+            SectionPanel(title: "HEV Bridge", icon: "link") {
+                if let diagnostics, hasHevCounters(diagnostics) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
+                        CompactStat(title: "Bridge In", value: "\(diagnostics.hevPacketsSentToTunnel) / \(Self.byteText(diagnostics.hevBytesSentToTunnel))", icon: "arrow.right")
+                        CompactStat(title: "Bridge Out", value: "\(diagnostics.hevPacketsReceivedFromTunnel) / \(Self.byteText(diagnostics.hevBytesReceivedFromTunnel))", icon: "arrow.left")
+                        CompactStat(title: "Bridge Errors", value: "\(diagnostics.hevBridgeWriteFailures)", icon: diagnostics.hevBridgeWriteFailures == 0 ? "checkmark.circle" : "exclamationmark.triangle")
+                        CompactStat(title: "HEV TX/RX", value: "\(diagnostics.hevTunnelTxPackets)/\(diagnostics.hevTunnelRxPackets)", icon: "chart.bar")
+                    }
+                } else {
+                    CompatibilityRow(name: "Engine", value: configuration?.packetEngine == "hev" ? "No HEV counters yet" : "Native engine")
+                }
+            }
+
+            SectionPanel(title: "Configuration", icon: "slider.horizontal.3") {
+                VStack(alignment: .leading, spacing: 8) {
+                    CompatibilityRow(name: "Summary", value: store.packetTunnelConfigurationText)
+                    if let configuration {
+                        CompatibilityRow(name: "Listener", value: configuration.listenerSummary)
+                        CompatibilityRow(name: "DNS", value: configuration.dnsSummary)
+                        CompatibilityRow(name: "Bypass", value: configuration.exclusionSummary)
+                        CompatibilityRow(name: "Flags", value: flagsSummary(configuration))
+                        CompatibilityRow(name: "HEV", value: hevSummary(configuration))
+                    }
+                    CompatibilityRow(name: "Status", value: store.packetTunnelStatusText)
+                    CompatibilityRow(name: "Diagnostics", value: store.packetTunnelDiagnosticsText)
+                    CompatibilityRow(name: "Last counters", value: store.packetTunnelLastDiagnosticsRefreshText)
+                }
+            }
+        }
+        .pagePadding()
+    }
+
+    private func hasHevCounters(_ diagnostics: PacketTunnelDiagnosticsSnapshot) -> Bool {
+        diagnostics.hevPacketsSentToTunnel > 0
+            || diagnostics.hevPacketsReceivedFromTunnel > 0
+            || diagnostics.hevBridgeWriteFailures > 0
+            || diagnostics.hevTunnelTxPackets > 0
+            || diagnostics.hevTunnelRxPackets > 0
+    }
+
+    private func flagsSummary(_ configuration: PacketTunnelConfigurationSnapshot) -> String {
+        [
+            "fake-IP \(configuration.enableFakeIPDNS ? "on" : "off")",
+            "AAAA suppress \(configuration.suppressIPv6DNS ? "on" : "off")",
+            "UDP relay \(configuration.enableUDPRelay ? "on" : "off")",
+            "proxy settings \(configuration.enableProxySettings ? "on" : "off")",
+            "IPv6 blackhole \(configuration.enableIPv6Blackhole ? "on" : "off")"
+        ].joined(separator: ", ")
+    }
+
+    private func hevSummary(_ configuration: PacketTunnelConfigurationSnapshot) -> String {
+        guard configuration.packetEngine == "hev" else {
+            return "Disabled"
+        }
+        let library = configuration.hevLibraryDirectory ?? "Bundled"
+        return "UDP \(configuration.hevUDPMode), library \(library)"
+    }
+
+    private static func byteText(_ value: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .binary)
+    }
+}
+
+enum TunnelStageState {
+    case good
+    case warning
+    case bad
+    case idle
+}
+
+struct TunnelStageRow: View {
+    let title: String
+    let value: String
+    let state: TunnelStageState
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .frame(width: 18)
+            Text(title)
+                .foregroundStyle(.secondary)
+                .frame(width: 130, alignment: .leading)
+            Text(value)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Spacer()
+        }
+        .font(.callout)
+    }
+
+    private var color: Color {
+        switch state {
+        case .good: .green
+        case .warning: .orange
+        case .bad: .red
+        case .idle: .secondary
+        }
+    }
+
+    private var icon: String {
+        switch state {
+        case .good: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .bad: "xmark.octagon.fill"
+        case .idle: "circle"
+        }
+    }
+}
+
 struct TestsView: View {
     @EnvironmentObject private var store: WorkbenchStore
 
@@ -2604,24 +2812,72 @@ struct TestsView: View {
                 Header(title: "Tests", subtitle: testsSubtitle)
                 Spacer()
                 Button {
-                    Task { await store.refreshSystemProxyStatus() }
+                    Task { await store.runStartupWorkflow() }
+                } label: {
+                    Label(store.startupWorkflowRunning ? "Starting" : "Run 1-8", systemImage: "play.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.startupWorkflowRunning || store.connectivityTestRunning)
+
+                Button {
+                    Task { await store.refreshStartupWorkflowStatus() }
                 } label: {
                     Label("Refresh Status", systemImage: "arrow.clockwise")
                 }
-                .disabled(store.systemProxyStatusInProgress || store.connectivityTestRunning)
+                .disabled(store.systemProxyStatusInProgress || store.connectivityTestRunning || store.startupWorkflowRunning)
 
                 Button {
                     Task { await store.runConnectivityDiagnostics() }
                 } label: {
                     Label(store.connectivityTestRunning ? "Running" : "Run Tests", systemImage: "play.fill")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.connectivityTestRunning)
+                .disabled(store.connectivityTestRunning || store.startupWorkflowRunning)
 
                 Button {
                     Task { await store.openBlazeTestBrowser() }
                 } label: {
                     Label("Open Test Browser", systemImage: "safari")
+                }
+                .disabled(store.startupWorkflowRunning)
+            }
+
+            SectionPanel(title: "Global VPN Startup", icon: "list.number") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(store.startupWorkflowSubtitle)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            Task { await store.refreshStartupWorkflowStatus() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(store.startupWorkflowRunning || store.connectivityTestRunning)
+                        Button {
+                            Task { await store.stopPacketTunnel() }
+                        } label: {
+                            Label("Stop VPN", systemImage: "stop.circle")
+                        }
+                        .disabled(store.startupWorkflowRunning)
+                        Button {
+                            Task { await store.stopPacketTunnelAndRestoreSurge() }
+                        } label: {
+                            Label("Stop + Surge", systemImage: "arrow.clockwise.circle")
+                        }
+                        .disabled(store.startupWorkflowRunning)
+                    }
+
+                    LazyVStack(spacing: 8) {
+                        ForEach(store.startupWorkflowSteps) { step in
+                            StartupWorkflowStepRow(
+                                step: step,
+                                isWorkflowRunning: store.startupWorkflowRunning
+                            ) {
+                                Task { await store.runStartupWorkflowStep(step.id) }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2632,7 +2888,11 @@ struct TestsView: View {
                     CompactStat(title: "Rule Cache", value: "\(store.importedRuleSetRuleCount)", icon: "tray.and.arrow.down")
                     CompactStat(title: "Effective Proxy", value: store.effectiveProxyStatus.summary, icon: "point.3.connected.trianglepath.dotted")
                     CompactStat(title: "Configured Proxy", value: store.systemProxyStatus.summary, icon: "desktopcomputer")
+                    CompactStat(title: "Surge", value: store.surgeConflictSummary, icon: "bolt.shield")
+                    CompactStat(title: "Watchdog", value: store.startupWatchdogText, icon: "timer")
+                    CompactStat(title: "System Extension", value: store.systemExtensionInstallSnapshot?.summary ?? store.systemExtensionInstallText, icon: "puzzlepiece.extension")
                     CompactStat(title: "Packet Tunnel", value: store.packetTunnelStatusText, icon: "shield.lefthalf.filled")
+                    CompactStat(title: "Tunnel Config", value: store.packetTunnelConfigurationSnapshot?.engineDescription ?? store.packetTunnelConfigurationText, icon: "cpu")
                     CompactStat(title: "Local Proxy", value: store.localProxySummary, icon: "point.3.connected.trianglepath.dotted")
                     CompactStat(title: "HTTP", value: "127.0.0.1:\(store.proxyListenPort)", icon: "network")
                     CompactStat(title: "SOCKS5", value: "127.0.0.1:\(store.socksListenPort)", icon: "point.3.connected.trianglepath.dotted")
@@ -2657,6 +2917,9 @@ struct TestsView: View {
     }
 
     private var testsSubtitle: String {
+        if store.startupWorkflowRunning {
+            return "Running Global VPN startup steps"
+        }
         if store.connectivityTestRunning {
             return "Running route, Google, Baidu, ChatGPT, DNS, and local listener checks"
         }
@@ -2677,6 +2940,93 @@ struct TestsView: View {
             return "Elsewhere"
         }
         return "Off"
+    }
+}
+
+struct StartupWorkflowStepRow: View {
+    let step: StartupWorkflowStep
+    let isWorkflowRunning: Bool
+    let run: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.14))
+                Text("\(step.id)")
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(statusColor)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(step.title)
+                        .font(.callout.weight(.semibold))
+                    Text(step.target)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(step.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if let updatedAt = step.updatedAt {
+                    Text(updatedAt, style: .time)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            StatusPill(title: step.status.rawValue, systemImage: statusIcon, color: statusColor)
+                .frame(minWidth: 106, alignment: .trailing)
+
+            Button {
+                run()
+            } label: {
+                Label(step.actionTitle, systemImage: "arrow.right.circle")
+            }
+            .disabled(isWorkflowRunning || step.status == .running)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusColor: Color {
+        switch step.status {
+        case .pending:
+            return .secondary
+        case .running:
+            return .blue
+        case .passed:
+            return .green
+        case .failed:
+            return .red
+        case .actionNeeded:
+            return .orange
+        case .info:
+            return .secondary
+        }
+    }
+
+    private var statusIcon: String {
+        switch step.status {
+        case .pending:
+            return "circle"
+        case .running:
+            return "arrow.triangle.2.circlepath"
+        case .passed:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        case .actionNeeded:
+            return "exclamationmark.triangle.fill"
+        case .info:
+            return "info.circle"
+        }
     }
 }
 
@@ -2933,6 +3283,11 @@ struct SettingsView: View {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
                         Button {
+                            Task { await store.refreshPacketTunnelConfiguration() }
+                        } label: {
+                            Label("Config", systemImage: "slider.horizontal.3")
+                        }
+                        Button {
                             Task { await store.refreshPacketTunnelDiagnostics() }
                         } label: {
                             Label("Diagnostics", systemImage: "chart.bar.doc.horizontal")
@@ -2941,6 +3296,7 @@ struct SettingsView: View {
                     CompatibilityRow(name: "Extension ID", value: SystemExtensionController.extensionIdentifier)
                     CompatibilityRow(name: "Host entitlement", value: store.packetTunnelHostEntitlementText)
                     CompatibilityRow(name: "Status", value: store.packetTunnelStatusText)
+                    CompatibilityRow(name: "Config", value: store.packetTunnelConfigurationText)
                     CompatibilityRow(name: "Bypass", value: store.packetTunnelExcludedIPv4Summary)
                     CompatibilityRow(name: "Diagnostics", value: store.packetTunnelDiagnosticsText)
                     CompatibilityRow(name: "Mode", value: "Transparent IPv4 TCP via local SOCKS5; DNS fake-IP; UDP relay gated; AAAA suppressed until IPv6 forwarding lands")

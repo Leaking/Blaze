@@ -47,6 +47,161 @@ struct ConnectivityTestResult: Identifiable, Hashable, Sendable {
     var durationText: String {
         durationMilliseconds.map { "\($0) ms" } ?? "-"
     }
+
+    var isBlockingStartupFailure: Bool {
+        guard status == .failed else { return false }
+        if transport == "Policy", name.hasSuffix(" Route") {
+            return false
+        }
+        if transport == "HTTP Fetch", name != "Google" {
+            return false
+        }
+        return true
+    }
+}
+
+enum StartupWorkflowStepStatus: String, Hashable, Sendable {
+    case pending = "Pending"
+    case running = "Running"
+    case passed = "Passed"
+    case failed = "Failed"
+    case actionNeeded = "Action Needed"
+    case info = "Info"
+}
+
+struct StartupWorkflowStep: Identifiable, Hashable, Sendable {
+    let id: Int
+    var title: String
+    var actionTitle: String
+    var target: String
+    var status: StartupWorkflowStepStatus
+    var detail: String
+    var updatedAt: Date?
+
+    static func defaults() -> [StartupWorkflowStep] {
+        [
+            StartupWorkflowStep(
+                id: 1,
+                title: "Surge Preflight",
+                actionTitle: "Close",
+                target: "Surge or external proxy",
+                status: .pending,
+                detail: "Not checked"
+            ),
+            StartupWorkflowStep(
+                id: 2,
+                title: "System Extension",
+                actionTitle: "Request",
+                target: SystemExtensionController.extensionIdentifier,
+                status: .pending,
+                detail: "Not checked"
+            ),
+            StartupWorkflowStep(
+                id: 3,
+                title: "Local Listeners",
+                actionTitle: "Start",
+                target: "HTTP and SOCKS5",
+                status: .pending,
+                detail: "Not started"
+            ),
+            StartupWorkflowStep(
+                id: 4,
+                title: "Tunnel Config",
+                actionTitle: "Install",
+                target: "Packet Tunnel provider configuration",
+                status: .pending,
+                detail: "Not installed"
+            ),
+            StartupWorkflowStep(
+                id: 5,
+                title: "Global VPN",
+                actionTitle: "Start",
+                target: "Packet Tunnel connection",
+                status: .pending,
+                detail: "Not connected"
+            ),
+            StartupWorkflowStep(
+                id: 6,
+                title: "Tunnel Counters",
+                actionTitle: "Read",
+                target: "Packet flow diagnostics",
+                status: .pending,
+                detail: "No counters loaded"
+            ),
+            StartupWorkflowStep(
+                id: 7,
+                title: "Connectivity Tests",
+                actionTitle: "Test",
+                target: "Google, Baidu, ChatGPT, DNS, HTTP, SOCKS5",
+                status: .pending,
+                detail: "Not run"
+            ),
+            StartupWorkflowStep(
+                id: 8,
+                title: "Surge Restore",
+                actionTitle: "Restart",
+                target: "Restore Surge when Blaze VPN is done",
+                status: .pending,
+                detail: "No restore decision yet"
+            )
+        ]
+    }
+}
+
+struct SurgeAppSnapshot: Hashable, Sendable {
+    var isRunning: Bool
+    var appName: String
+    var bundleIdentifier: String?
+    var bundlePath: String?
+    var processIdentifier: Int32?
+    var networkTunnelStatus: String
+
+    static let notRunning = SurgeAppSnapshot(
+        isRunning: false,
+        appName: "Surge",
+        bundleIdentifier: nil,
+        bundlePath: nil,
+        processIdentifier: nil,
+        networkTunnelStatus: "Not checked"
+    )
+
+    var summary: String {
+        if isRunning {
+            return "Running\(bundleIdentifier.map { " (\($0))" } ?? "")"
+        }
+        return "Not running"
+    }
+
+    var restoreLabel: String {
+        bundleIdentifier ?? bundlePath ?? appName
+    }
+}
+
+struct SystemExtensionInstallSnapshot: Hashable, Sendable {
+    var hostVersion: String
+    var hostBuild: String
+    var bundledVersion: String
+    var bundledBuild: String
+    var activeVersion: String?
+    var activeBuild: String?
+    var statusLine: String
+
+    var isActiveLatest: Bool {
+        guard let activeVersion, let activeBuild else { return false }
+        return activeVersion == bundledVersion && activeBuild == bundledBuild
+    }
+
+    var summary: String {
+        let active = activeVersion.map { "\($0)/\(activeBuild ?? "?")" } ?? "not active"
+        return "app \(hostVersion)/\(hostBuild), bundled \(bundledVersion)/\(bundledBuild), active \(active)"
+    }
+
+    var detail: String {
+        if isActiveLatest {
+            return "Active system extension matches bundled build \(bundledVersion)/\(bundledBuild)"
+        }
+        return "Active system extension does not match bundled build; \(summary); \(statusLine)"
+    }
 }
 
 @MainActor
@@ -88,12 +243,23 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var favoriteProxyNames: Set<String> = []
     @Published private(set) var connectivityTestRunning = false
     @Published private(set) var connectivityTestResults: [ConnectivityTestResult] = []
+    @Published private(set) var startupWorkflowRunning = false
+    @Published private(set) var startupWorkflowSteps: [StartupWorkflowStep] = StartupWorkflowStep.defaults()
+    @Published private(set) var startupWatchdogText = "Idle"
+    @Published private(set) var surgeAppSnapshot: SurgeAppSnapshot = .notRunning
+    @Published private(set) var surgeRestoreText = "No restore candidate"
     @Published private(set) var packetTunnelStatusText = "System extension not installed"
     @Published private(set) var packetTunnelConnected = false
     @Published private(set) var packetTunnelTransitioning = false
     @Published private(set) var packetTunnelHostEntitlementText = SystemExtensionController.hostEntitlementStatusText
     @Published private(set) var packetTunnelExcludedIPv4Summary = "Not computed"
     @Published private(set) var packetTunnelDiagnosticsText = "Not queried"
+    @Published private(set) var packetTunnelDiagnosticsSnapshot: PacketTunnelDiagnosticsSnapshot?
+    @Published private(set) var packetTunnelConfigurationSnapshot: PacketTunnelConfigurationSnapshot?
+    @Published private(set) var packetTunnelConfigurationText = "Not loaded"
+    @Published private(set) var packetTunnelLastDiagnosticsRefreshText = "Never"
+    @Published private(set) var systemExtensionInstallSnapshot: SystemExtensionInstallSnapshot?
+    @Published private(set) var systemExtensionInstallText = "Not checked"
 
     private let probe = LatencyProbe()
     private let systemExtensionController = SystemExtensionController()
@@ -101,6 +267,10 @@ final class WorkbenchStore: ObservableObject {
     private var proxyServer: LocalHTTPProxyServer?
     private var socksServer: LocalSOCKS5ProxyServer?
     private var proxyRefreshTask: Task<Void, Never>?
+    private var startupWatchdogTask: Task<Void, Never>?
+    private var startupWatchdogDeadline: Date?
+    private var startupWatchdogRecoveryInProgress = false
+    private var surgeRestoreCandidate: SurgeAppSnapshot?
     private let defaults: UserDefaults
     private var didLoadInitialProfile = false
 
@@ -135,6 +305,78 @@ final class WorkbenchStore: ObservableObject {
 
     var browserTrafficShouldReachBlaze: Bool {
         effectiveProxyStatus.matchesBlaze || packetTunnelConnected
+    }
+
+    var packetTunnelDebugSubtitle: String {
+        if packetTunnelConnected {
+            return "Connected, \(packetTunnelConfigurationSnapshot?.packetEngine ?? "unknown") engine"
+        }
+        if packetTunnelTransitioning {
+            return "Transitioning, \(packetTunnelStatusText)"
+        }
+        return packetTunnelStatusText
+    }
+
+    var startupWorkflowSubtitle: String {
+        if startupWorkflowRunning {
+            return "Running startup flow"
+        }
+        let failed = startupWorkflowSteps.filter { $0.status == .failed }.count
+        if failed > 0 {
+            return "\(failed) startup step\(failed == 1 ? "" : "s") failed"
+        }
+        let actionNeeded = startupWorkflowSteps.filter { $0.status == .actionNeeded }.count
+        if actionNeeded > 0 {
+            return "\(actionNeeded) startup step\(actionNeeded == 1 ? "" : "s") need approval or retry"
+        }
+        let passed = startupWorkflowSteps.filter { $0.status == .passed }.count
+        return "\(passed) of \(startupWorkflowSteps.count) startup steps passed"
+    }
+
+    var surgeConflictSummary: String {
+        if surgeAppSnapshot.isRunning {
+            return surgeAppSnapshot.summary
+        }
+        if effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze && !packetTunnelConnected {
+            return "Other proxy active"
+        }
+        return surgeAppSnapshot.networkTunnelStatus == "Not checked" ? "Not checked" : "Clear"
+    }
+
+    private var surgeConflictTestStatus: ConnectivityTestStatus {
+        if packetTunnelConnected && surgeAppSnapshot.isRunning {
+            return .failed
+        }
+        if !packetTunnelConnected && effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze {
+            return .failed
+        }
+        if surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected") && !packetTunnelConnected {
+            return .failed
+        }
+        return .info
+    }
+
+    private var surgeConflictTestDetail: String {
+        if packetTunnelConnected && surgeAppSnapshot.isRunning {
+            return "Surge is running while Blaze Packet Tunnel is connected; it may retake DNS or utun"
+        }
+        if !packetTunnelConnected && effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze {
+            return "Effective proxy is not Blaze: \(effectiveProxyStatus.summary)"
+        }
+        return "\(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)"
+    }
+
+    private var startupConnectivityPassed: Bool {
+        startupWorkflowSteps.first(where: { $0.id == 7 })?.status == .passed
+            && Self.blockingConnectivityFailures(in: connectivityTestResults).isEmpty
+    }
+
+    private var startupWatchdogShouldRecover: Bool {
+        guard !startupConnectivityPassed else { return false }
+        let vpnOrExternalProxyWasTouched = packetTunnelConnected
+            || surgeRestoreCandidate != nil
+            || startupWorkflowSteps.contains { $0.id >= 5 && $0.updatedAt != nil }
+        return vpnOrExternalProxyWasTouched
     }
 
     var systemProxyRestoreSummary: String {
@@ -693,6 +935,7 @@ final class WorkbenchStore: ObservableObject {
                 socksPort: socksListenPort,
                 excludedIPv4Addresses: excludedIPv4Addresses
             )
+            await refreshPacketTunnelConfiguration(updateStatusText: false)
             await refreshPacketTunnelStatus(updateStatusText: false)
             let status = packetTunnelStatusText
             packetTunnelStatusText = "Configuration installed with \(excludedIPv4Addresses.count) excluded upstream IPs; tunnel is \(status)"
@@ -712,6 +955,7 @@ final class WorkbenchStore: ObservableObject {
                 socksPort: socksListenPort,
                 excludedIPv4Addresses: excludedIPv4Addresses
             )
+            await refreshPacketTunnelConfiguration(updateStatusText: false)
             try await PacketTunnelConfigurationManager.startTunnel()
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             await refreshPacketTunnelStatus(updateStatusText: false)
@@ -737,6 +981,560 @@ final class WorkbenchStore: ObservableObject {
         } catch {
             packetTunnelStatusText = "Packet tunnel stop failed: \(error)"
             statusText = packetTunnelStatusText
+        }
+    }
+
+    func stopPacketTunnelAndRestoreSurge() async {
+        await stopPacketTunnel()
+        await refreshSurgeStatus(updateStatusText: false)
+        guard !packetTunnelConnected else {
+            statusText = "Surge restore skipped because Packet Tunnel is still connected"
+            return
+        }
+        _ = await restoreSurgeAfterBlazeIfSafe(stepID: 8)
+        updateStartupWorkflowFromCurrentState()
+        statusText = startupWorkflowSubtitle
+    }
+
+    func runStartupWatchdogRecoveryNow(reason: String = "Manual recovery requested") async {
+        await recoverFromStartupWatchdog(reason: reason)
+    }
+
+    func refreshSurgeStatus() async {
+        await refreshSurgeStatus(updateStatusText: true)
+    }
+
+    private func refreshSurgeStatus(updateStatusText: Bool) async {
+        var snapshot = Self.detectSurgeApp()
+        snapshot.networkTunnelStatus = (try? await Self.surgeNetworkTunnelStatus()) ?? "Surge VPN status unavailable"
+        surgeAppSnapshot = snapshot
+        if updateStatusText {
+            statusText = "Surge status: \(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)"
+        }
+    }
+
+    private func refreshSystemExtensionInstallStatus(updateStatusText: Bool) async {
+        let snapshot = await Self.systemExtensionInstallSnapshot()
+        systemExtensionInstallSnapshot = snapshot
+        systemExtensionInstallText = snapshot.summary
+        if updateStatusText {
+            statusText = snapshot.detail
+        }
+    }
+
+    private func closeSurgeApplications() async -> Bool {
+        let runningApps = Self.runningSurgeApplications()
+        guard !runningApps.isEmpty else { return true }
+
+        for app in runningApps {
+            _ = app.terminate()
+        }
+
+        for _ in 0..<30 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if Self.runningSurgeApplications().isEmpty {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func restoreSurgeAfterBlazeIfSafe(stepID: Int) async -> Bool {
+        await refreshPacketTunnelStatus(updateStatusText: false)
+        guard !packetTunnelConnected else {
+            setStartupStep(
+                stepID,
+                status: .actionNeeded,
+                detail: "Blaze VPN is still connected; not restarting Surge to avoid DNS/utun takeover"
+            )
+            return true
+        }
+
+        await refreshSurgeStatus(updateStatusText: false)
+        if surgeAppSnapshot.isRunning {
+            setStartupStep(stepID, status: .passed, detail: "Surge is already running")
+            return true
+        }
+
+        guard let candidate = surgeRestoreCandidate else {
+            setStartupStep(stepID, status: .info, detail: "No Surge restore candidate was captured")
+            return true
+        }
+
+        do {
+            try await Self.openSurge(candidate)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await refreshSurgeStatus(updateStatusText: false)
+            if surgeAppSnapshot.isRunning {
+                setStartupStep(stepID, status: .passed, detail: "Restarted Surge: \(surgeAppSnapshot.restoreLabel)")
+                return true
+            }
+            setStartupStep(stepID, status: .failed, detail: "Requested Surge restart, but no running Surge app was detected")
+            return false
+        } catch {
+            setStartupStep(stepID, status: .failed, detail: "Surge restart failed: \(error)")
+            return false
+        }
+    }
+
+    func refreshStartupWorkflowStatus() async {
+        guard !startupWorkflowRunning else { return }
+        await refreshSurgeStatus(updateStatusText: false)
+        await refreshSystemProxyStatus(updateStatusText: false)
+        await refreshSystemExtensionInstallStatus(updateStatusText: false)
+        await refreshPacketTunnelStatus(updateStatusText: false)
+        updateStartupWorkflowFromCurrentState()
+        statusText = "Startup flow status refreshed"
+    }
+
+    func runStartupWorkflow() async {
+        guard !startupWorkflowRunning else { return }
+        startupWorkflowRunning = true
+        startupWorkflowSteps = StartupWorkflowStep.defaults()
+        statusText = "Running startup flow..."
+        startStartupWatchdog()
+        defer {
+            if startupConnectivityPassed {
+                stopStartupWatchdog(markCompleted: true)
+            }
+            startupWorkflowRunning = false
+            statusText = startupWorkflowSubtitle
+        }
+
+        for stepID in startupWorkflowSteps.map(\.id) {
+            let canContinue = await performStartupWorkflowStep(stepID)
+            guard canContinue else {
+                markRemainingStartupStepsSkipped(after: stepID, reason: "Skipped because step \(stepID) did not finish successfully")
+                return
+            }
+        }
+    }
+
+    func runStartupWorkflowStep(_ stepID: Int) async {
+        guard !startupWorkflowRunning else { return }
+        startupWorkflowRunning = true
+        defer {
+            startupWorkflowRunning = false
+            statusText = startupWorkflowSubtitle
+        }
+        _ = await performStartupWorkflowStep(stepID)
+    }
+
+    private func startStartupWatchdog(timeoutSeconds: TimeInterval = 300) {
+        startupWatchdogTask?.cancel()
+        startupWatchdogRecoveryInProgress = false
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        startupWatchdogDeadline = deadline
+        startupWatchdogText = "Armed until \(deadline.formatted(date: .omitted, time: .standard))"
+        startupWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await self?.checkStartupWatchdog()
+            }
+        }
+    }
+
+    private func stopStartupWatchdog(markCompleted: Bool) {
+        startupWatchdogTask?.cancel()
+        startupWatchdogTask = nil
+        startupWatchdogDeadline = nil
+        if markCompleted && startupWatchdogText.hasPrefix("Armed") {
+            startupWatchdogText = startupConnectivityPassed ? "Completed" : "Stopped"
+        }
+    }
+
+    private func checkStartupWatchdog() async {
+        guard let deadline = startupWatchdogDeadline,
+              Date() >= deadline,
+              !startupWatchdogRecoveryInProgress
+        else {
+            return
+        }
+
+        await refreshPacketTunnelStatus(updateStatusText: false)
+        await refreshSurgeStatus(updateStatusText: false)
+        guard startupWatchdogShouldRecover else {
+            startupWatchdogText = "Timed out; no recovery action needed"
+            stopStartupWatchdog(markCompleted: false)
+            return
+        }
+
+        startupWatchdogRecoveryInProgress = true
+        await recoverFromStartupWatchdog(reason: "Startup watchdog timed out after 5 minutes")
+    }
+
+    private func recoverFromStartupWatchdog(reason: String) async {
+        stopStartupWatchdog(markCompleted: false)
+        startupWatchdogText = "Recovering: \(reason)"
+        await writeStartupWatchdogRecord(reason: reason, phase: "begin")
+        setStartupStep(
+            7,
+            status: .failed,
+            detail: "\(reason); stopping Blaze VPN and restoring Surge",
+            target: "Watchdog recovery"
+        )
+
+        await stopPacketTunnel()
+        if !proxyServerRunning && !socksServerRunning {
+            statusText = "Blaze listeners were already stopped"
+        }
+        await refreshPacketTunnelStatus(updateStatusText: false)
+        guard !packetTunnelConnected else {
+            await writeStartupWatchdogRecord(reason: reason, phase: "blocked-tunnel-still-connected")
+            startupWatchdogText = "Recovery blocked: Blaze VPN is still connected"
+            statusText = "Startup watchdog could not stop Blaze VPN; leaving app open for manual recovery"
+            return
+        }
+        _ = await restoreSurgeAfterBlazeIfSafe(stepID: 8)
+        await refreshSurgeStatus(updateStatusText: false)
+        await writeStartupWatchdogRecord(reason: reason, phase: "restored")
+        startupWatchdogText = "Recovered at \(Date().formatted(date: .omitted, time: .standard))"
+        statusText = "Startup watchdog recovered network state; Blaze VPN stopped and Surge restore attempted"
+        scheduleTerminationAfterWatchdogRecovery()
+    }
+
+    private func scheduleTerminationAfterWatchdogRecovery() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func writeStartupWatchdogRecord(reason: String, phase: String) async {
+        let url = Self.startupWatchdogRecordURL()
+        let lines = [
+            "timestamp=\(ISO8601DateFormatter().string(from: Date()))",
+            "phase=\(phase)",
+            "reason=\(reason)",
+            "watchdog=\(startupWatchdogText)",
+            "packetTunnel=\(packetTunnelStatusText)",
+            "surge=\(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)",
+            "connectivityResults=\(connectivityTestResults.count)",
+            "blockingFailures=\(Self.blockingConnectivityFailures(in: connectivityTestResults).map { "\($0.name) \($0.transport): \($0.detail)" }.joined(separator: "; "))",
+            ""
+        ]
+        let text = lines.joined(separator: "\n")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            statusText = "Watchdog record write failed: \(error)"
+        }
+    }
+
+    private func performStartupWorkflowStep(_ stepID: Int) async -> Bool {
+        switch stepID {
+        case 1:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Detecting Surge and external proxy takeover"
+            )
+            await refreshSurgeStatus(updateStatusText: false)
+            await refreshSystemProxyStatus(updateStatusText: false)
+
+            if surgeAppSnapshot.isRunning {
+                surgeRestoreCandidate = surgeAppSnapshot
+                surgeRestoreText = "Restore candidate: \(surgeAppSnapshot.restoreLabel)"
+                setStartupStep(
+                    stepID,
+                    status: .running,
+                    detail: "Surge is running; requesting quit before Blaze VPN starts"
+                )
+                let closed = await closeSurgeApplications()
+                await refreshSurgeStatus(updateStatusText: false)
+                if closed && !surgeAppSnapshot.isRunning {
+                    setStartupStep(stepID, status: .passed, detail: "Surge closed; \(surgeRestoreText)")
+                    return true
+                }
+                setStartupStep(stepID, status: .failed, detail: "Surge is still running; quit it manually before starting Blaze VPN")
+                return false
+            }
+
+            if effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze && !packetTunnelConnected {
+                setStartupStep(
+                    stepID,
+                    status: .actionNeeded,
+                    detail: "Surge is not running, but another effective proxy is active: \(effectiveProxyStatus.summary)"
+                )
+                return true
+            }
+
+            setStartupStep(stepID, status: .passed, detail: "No running Surge app detected; \(surgeAppSnapshot.networkTunnelStatus)")
+            return true
+
+        case 2:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Checking host entitlement and requesting extension activation"
+            )
+            guard SystemExtensionController.hostHasInstallEntitlement() else {
+                setStartupStep(
+                    stepID,
+                    status: .failed,
+                    detail: "Host app signature is missing \(SystemExtensionController.requiredHostEntitlement)"
+                )
+                return false
+            }
+
+            activatePacketTunnelSystemExtension()
+            for _ in 0..<24 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await refreshSystemExtensionInstallStatus(updateStatusText: false)
+                let status = packetTunnelStatusText
+                if status.localizedCaseInsensitiveContains("failed") || status.localizedCaseInsensitiveContains("missing") {
+                    setStartupStep(stepID, status: .failed, detail: status)
+                    return false
+                }
+                if status.localizedCaseInsensitiveContains("approval") {
+                    setStartupStep(stepID, status: .actionNeeded, detail: status)
+                    return true
+                }
+                if let snapshot = systemExtensionInstallSnapshot, snapshot.isActiveLatest {
+                    setStartupStep(stepID, status: .passed, detail: "\(status); \(snapshot.detail)")
+                    return true
+                }
+            }
+
+            let status = packetTunnelStatusText
+            if status.localizedCaseInsensitiveContains("approval") || status.localizedCaseInsensitiveContains("submitting") {
+                setStartupStep(stepID, status: .actionNeeded, detail: "\(status); \(systemExtensionInstallText)")
+                return true
+            }
+            setStartupStep(
+                stepID,
+                status: .failed,
+                detail: systemExtensionInstallSnapshot?.detail ?? "System extension did not become active latest"
+            )
+            return false
+
+        case 3:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Starting local HTTP and SOCKS5 listeners",
+                target: "HTTP \(proxyListenPort), SOCKS5 \(socksListenPort)"
+            )
+            await startLocalProxyStack()
+            if proxyServerRunning && socksServerRunning {
+                setStartupStep(stepID, status: .passed, detail: localProxySummary)
+                return true
+            }
+            setStartupStep(stepID, status: .failed, detail: statusText)
+            return false
+
+        case 4:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Installing Packet Tunnel provider configuration"
+            )
+            await installPacketTunnelConfiguration()
+            if let snapshot = packetTunnelConfigurationSnapshot {
+                setStartupStep(
+                    stepID,
+                    status: .passed,
+                    detail: "\(snapshot.engineDescription); \(snapshot.dnsSummary); \(packetTunnelExcludedIPv4Summary)"
+                )
+                return true
+            }
+            setStartupStep(stepID, status: .failed, detail: packetTunnelConfigurationText)
+            return false
+
+        case 5:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Starting Packet Tunnel Global VPN"
+            )
+            await startPacketTunnel()
+            if packetTunnelConnected {
+                setStartupStep(stepID, status: .passed, detail: packetTunnelStatusText)
+                return true
+            }
+            if packetTunnelTransitioning {
+                setStartupStep(stepID, status: .actionNeeded, detail: packetTunnelStatusText)
+                return false
+            }
+            setStartupStep(stepID, status: .failed, detail: packetTunnelStatusText)
+            return false
+
+        case 6:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Reading tunnel status and packet counters"
+            )
+            await refreshPacketTunnelStatus(updateStatusText: false)
+            guard packetTunnelConnected else {
+                setStartupStep(stepID, status: .failed, detail: "Tunnel is not connected: \(packetTunnelStatusText)")
+                return false
+            }
+            if let snapshot = packetTunnelDiagnosticsSnapshot {
+                setStartupStep(stepID, status: .passed, detail: snapshot.summary)
+                return true
+            }
+            setStartupStep(stepID, status: .failed, detail: packetTunnelDiagnosticsText)
+            return false
+
+        case 7:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Running connectivity diagnostics",
+                target: "Diagnostics 0/\(Self.expectedConnectivityResultCount)"
+            )
+            await runConnectivityDiagnostics()
+            let blockingFailures = Self.blockingConnectivityFailures(in: connectivityTestResults)
+            let warningFailures = connectivityTestResults.filter { $0.status == .failed && !$0.isBlockingStartupFailure }
+            if blockingFailures.isEmpty && !connectivityTestResults.isEmpty {
+                let warningText = warningFailures.isEmpty ? "" : "; \(warningFailures.count) warning\(warningFailures.count == 1 ? "" : "s")"
+                setStartupStep(
+                    stepID,
+                    status: .passed,
+                    detail: "\(connectivityTestResults.count) checks completed\(warningText)",
+                    target: "Diagnostics \(connectivityTestResults.count)/\(Self.expectedConnectivityResultCount)"
+                )
+                return true
+            }
+            let failedNames = blockingFailures.prefix(4).map { "\($0.name) \($0.transport)" }.joined(separator: ", ")
+            let suffix = blockingFailures.count > 4 ? ", +\(blockingFailures.count - 4) more" : ""
+            setStartupStep(
+                stepID,
+                status: .failed,
+                detail: blockingFailures.isEmpty ? "No connectivity results were produced" : "Blocking failures: \(failedNames)\(suffix)",
+                target: "Diagnostics \(connectivityTestResults.count)/\(Self.expectedConnectivityResultCount)"
+            )
+            return false
+
+        case 8:
+            setStartupStep(
+                stepID,
+                status: .running,
+                detail: "Checking whether Surge should be restored"
+            )
+            return await restoreSurgeAfterBlazeIfSafe(stepID: stepID)
+
+        default:
+            return false
+        }
+    }
+
+    private func updateStartupWorkflowFromCurrentState() {
+        let surgeStatus: StartupWorkflowStepStatus
+        let surgeDetail: String
+        if surgeAppSnapshot.isRunning {
+            surgeStatus = .actionNeeded
+            surgeDetail = "Surge is running and can take over DNS/utun before Blaze VPN starts"
+        } else if effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze && !packetTunnelConnected {
+            surgeStatus = .actionNeeded
+            surgeDetail = "Another effective proxy is active: \(effectiveProxyStatus.summary)"
+        } else if surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected") {
+            surgeStatus = .actionNeeded
+            surgeDetail = surgeAppSnapshot.networkTunnelStatus
+        } else {
+            surgeStatus = .passed
+            surgeDetail = "No running Surge app detected; \(surgeAppSnapshot.networkTunnelStatus)"
+        }
+        setStartupStep(1, status: surgeStatus, detail: surgeDetail, target: surgeAppSnapshot.summary)
+
+        let extensionLatest = systemExtensionInstallSnapshot?.isActiveLatest ?? false
+        let extensionStatus: StartupWorkflowStepStatus = SystemExtensionController.hostHasInstallEntitlement() && extensionLatest ? .passed : .failed
+        setStartupStep(
+            2,
+            status: extensionStatus,
+            detail: "\(SystemExtensionController.hostEntitlementStatusText); \(systemExtensionInstallSnapshot?.detail ?? systemExtensionInstallText)"
+        )
+
+        let listenerStatus: StartupWorkflowStepStatus
+        let listenerDetail: String
+        if proxyServerRunning && socksServerRunning {
+            listenerStatus = .passed
+            listenerDetail = localProxySummary
+        } else if proxyServerRunning || socksServerRunning {
+            listenerStatus = .failed
+            listenerDetail = "Partial listener state: \(localProxySummary)"
+        } else {
+            listenerStatus = .pending
+            listenerDetail = "Local listeners are stopped"
+        }
+        setStartupStep(
+            3,
+            status: listenerStatus,
+            detail: listenerDetail,
+            target: "HTTP \(proxyListenPort), SOCKS5 \(socksListenPort)"
+        )
+
+        setStartupStep(
+            4,
+            status: packetTunnelConfigurationSnapshot == nil ? .pending : .passed,
+            detail: packetTunnelConfigurationText
+        )
+
+        let tunnelStatus: StartupWorkflowStepStatus
+        if packetTunnelConnected {
+            tunnelStatus = .passed
+        } else if packetTunnelTransitioning {
+            tunnelStatus = .actionNeeded
+        } else if packetTunnelStatusText.localizedCaseInsensitiveContains("failed") {
+            tunnelStatus = .failed
+        } else {
+            tunnelStatus = .pending
+        }
+        setStartupStep(5, status: tunnelStatus, detail: packetTunnelStatusText)
+
+        let diagnosticsStatus: StartupWorkflowStepStatus
+        if packetTunnelDiagnosticsSnapshot != nil {
+            diagnosticsStatus = .passed
+        } else if packetTunnelConnected {
+            diagnosticsStatus = .pending
+        } else {
+            diagnosticsStatus = .pending
+        }
+        setStartupStep(6, status: diagnosticsStatus, detail: packetTunnelDiagnosticsText)
+
+        let testFailures = Self.blockingConnectivityFailures(in: connectivityTestResults)
+        let warningFailures = connectivityTestResults.filter { $0.status == .failed && !$0.isBlockingStartupFailure }
+        if connectivityTestResults.isEmpty {
+            setStartupStep(7, status: .pending, detail: "Not run")
+        } else if testFailures.isEmpty {
+            let warningText = warningFailures.isEmpty ? "" : "; \(warningFailures.count) warning\(warningFailures.count == 1 ? "" : "s")"
+            setStartupStep(7, status: .passed, detail: "\(connectivityTestResults.count) checks completed\(warningText)")
+        } else {
+            setStartupStep(7, status: .failed, detail: "\(testFailures.count) blocking checks failed")
+        }
+
+        if surgeRestoreCandidate == nil {
+            setStartupStep(8, status: .info, detail: surgeRestoreText)
+        } else if packetTunnelConnected {
+            setStartupStep(8, status: .actionNeeded, detail: "Surge restore is held until Blaze VPN is stopped")
+        } else if surgeAppSnapshot.isRunning {
+            setStartupStep(8, status: .passed, detail: "Surge is running")
+        } else {
+            setStartupStep(8, status: .pending, detail: surgeRestoreText)
+        }
+    }
+
+    private func markRemainingStartupStepsSkipped(after failedStepID: Int, reason: String) {
+        for step in startupWorkflowSteps where step.id > failedStepID && step.status == .pending {
+            setStartupStep(step.id, status: .info, detail: reason)
+        }
+    }
+
+    private func setStartupStep(
+        _ stepID: Int,
+        status: StartupWorkflowStepStatus,
+        detail: String,
+        target: String? = nil
+    ) {
+        guard let index = startupWorkflowSteps.firstIndex(where: { $0.id == stepID }) else { return }
+        startupWorkflowSteps[index].status = status
+        startupWorkflowSteps[index].detail = detail
+        startupWorkflowSteps[index].updatedAt = Date()
+        if let target {
+            startupWorkflowSteps[index].target = target
         }
     }
 
@@ -826,6 +1624,7 @@ final class WorkbenchStore: ObservableObject {
 
     private func refreshPacketTunnelStatus(updateStatusText: Bool) async {
         do {
+            await refreshPacketTunnelConfiguration(updateStatusText: false)
             let snapshot = try await PacketTunnelConfigurationManager.statusSnapshot()
             packetTunnelStatusText = snapshot.text
             packetTunnelConnected = snapshot.isConnected
@@ -834,6 +1633,7 @@ final class WorkbenchStore: ObservableObject {
                 await refreshPacketTunnelDiagnostics(updateStatusText: false)
             } else {
                 packetTunnelDiagnosticsText = "Tunnel is not connected"
+                packetTunnelDiagnosticsSnapshot = nil
             }
             if updateStatusText {
                 statusText = "Packet tunnel status: \(snapshot.text)"
@@ -843,8 +1643,32 @@ final class WorkbenchStore: ObservableObject {
             packetTunnelConnected = false
             packetTunnelTransitioning = false
             packetTunnelDiagnosticsText = "Unavailable"
+            packetTunnelDiagnosticsSnapshot = nil
+            packetTunnelConfigurationSnapshot = nil
+            packetTunnelConfigurationText = "Unavailable"
             if updateStatusText {
                 statusText = "Packet tunnel status unavailable: \(error)"
+            }
+        }
+    }
+
+    func refreshPacketTunnelConfiguration() async {
+        await refreshPacketTunnelConfiguration(updateStatusText: true)
+    }
+
+    private func refreshPacketTunnelConfiguration(updateStatusText: Bool) async {
+        do {
+            let snapshot = try await PacketTunnelConfigurationManager.configurationSnapshot()
+            packetTunnelConfigurationSnapshot = snapshot
+            packetTunnelConfigurationText = "\(snapshot.engineDescription); DNS \(snapshot.tunnelDNSServers.joined(separator: ", ")); \(snapshot.listenerSummary)"
+            if updateStatusText {
+                statusText = "Packet tunnel config: \(packetTunnelConfigurationText)"
+            }
+        } catch {
+            packetTunnelConfigurationSnapshot = nil
+            packetTunnelConfigurationText = "Unavailable: \(error)"
+            if updateStatusText {
+                statusText = "Packet tunnel config unavailable: \(error)"
             }
         }
     }
@@ -856,11 +1680,14 @@ final class WorkbenchStore: ObservableObject {
     private func refreshPacketTunnelDiagnostics(updateStatusText: Bool) async {
         do {
             let snapshot = try await PacketTunnelConfigurationManager.diagnosticsSnapshot()
+            packetTunnelDiagnosticsSnapshot = snapshot
             packetTunnelDiagnosticsText = snapshot.summary
+            packetTunnelLastDiagnosticsRefreshText = Date().formatted(date: .omitted, time: .standard)
             if updateStatusText {
                 statusText = "Packet tunnel diagnostics: \(snapshot.summary)"
             }
         } catch {
+            packetTunnelDiagnosticsSnapshot = nil
             packetTunnelDiagnosticsText = "Unavailable: \(error)"
             if updateStatusText {
                 statusText = "Packet tunnel diagnostics unavailable: \(error)"
@@ -903,6 +1730,10 @@ final class WorkbenchStore: ObservableObject {
             Task { await stopPacketTunnel() }
         case "refresh-tunnel":
             Task { await refreshPacketTunnelStatus() }
+        case "run-startup-workflow":
+            Task { await runStartupWorkflow() }
+        case "recover-startup":
+            Task { await runStartupWatchdogRecoveryNow(reason: "Automation recovery requested") }
         default:
             statusText = "Unknown automation URL action: \(action)"
         }
@@ -1022,6 +1853,182 @@ final class WorkbenchStore: ObservableObject {
                 statusText = "System proxy status failed: \(error)"
             }
         }
+    }
+
+    private static func runningSurgeApplications() -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter { app in
+            let name = app.localizedName?.lowercased() ?? ""
+            let bundleIdentifier = app.bundleIdentifier?.lowercased() ?? ""
+            return name == "surge"
+                || name.hasPrefix("surge ")
+                || bundleIdentifier.contains("surge")
+                || bundleIdentifier.contains("nssurge")
+        }
+    }
+
+    private static func detectSurgeApp() -> SurgeAppSnapshot {
+        guard let app = runningSurgeApplications().first else {
+            return SurgeAppSnapshot.notRunning
+        }
+
+        return SurgeAppSnapshot(
+            isRunning: true,
+            appName: app.localizedName ?? "Surge",
+            bundleIdentifier: app.bundleIdentifier,
+            bundlePath: app.bundleURL?.path,
+            processIdentifier: app.processIdentifier,
+            networkTunnelStatus: "Not checked"
+        )
+    }
+
+    private nonisolated static func systemExtensionInstallSnapshot() async -> SystemExtensionInstallSnapshot {
+        let host = bundleVersionInfo(at: Bundle.main.bundleURL)
+        let bundled = bundleVersionInfo(at: bundledSystemExtensionURL())
+        let output = (try? await systemExtensionsListOutput()) ?? ""
+        let statusLine = activeSystemExtensionLine(from: output)
+        let active = statusLine.flatMap(versionBuild(from:))
+
+        return SystemExtensionInstallSnapshot(
+            hostVersion: host.version,
+            hostBuild: host.build,
+            bundledVersion: bundled.version,
+            bundledBuild: bundled.build,
+            activeVersion: active?.version,
+            activeBuild: active?.build,
+            statusLine: statusLine ?? "No active \(SystemExtensionController.extensionIdentifier) entry in systemextensionsctl list"
+        )
+    }
+
+    private nonisolated static func bundledSystemExtensionURL() -> URL {
+        Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("SystemExtensions", isDirectory: true)
+            .appendingPathComponent("\(SystemExtensionController.extensionIdentifier).systemextension", isDirectory: true)
+    }
+
+    private nonisolated static func bundleVersionInfo(at bundleURL: URL) -> (version: String, build: String) {
+        let infoURL = bundleURL.appendingPathComponent("Contents", isDirectory: true).appendingPathComponent("Info.plist")
+        let dictionary = NSDictionary(contentsOf: infoURL) as? [String: Any]
+        let bundle = Bundle(url: bundleURL)
+        let version = dictionary?["CFBundleShortVersionString"] as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "unknown"
+        let build = dictionary?["CFBundleVersion"] as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "unknown"
+        return (version, build)
+    }
+
+    private nonisolated static func activeSystemExtensionLine(from output: String) -> String? {
+        let lines = output
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.contains(SystemExtensionController.extensionIdentifier) }
+        return lines.first {
+            $0.contains("[activated enabled]") && !$0.localizedCaseInsensitiveContains("terminated")
+        } ?? lines.first {
+            $0.contains("[activated")
+        } ?? lines.first
+    }
+
+    private nonisolated static func versionBuild(from line: String) -> (version: String, build: String)? {
+        guard let open = line.firstIndex(of: "("),
+              let close = line[open...].firstIndex(of: ")")
+        else {
+            return nil
+        }
+        let pair = line[line.index(after: open)..<close].split(separator: "/", maxSplits: 1).map(String.init)
+        guard pair.count == 2 else { return nil }
+        return (pair[0], pair[1])
+    }
+
+    private nonisolated static func systemExtensionsListOutput() async throws -> String {
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/systemextensionsctl")
+            process.arguments = ["list"]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0 else {
+                let message = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "systemextensionsctl exited with \(process.terminationStatus)")
+            }
+            return String(data: output, encoding: .utf8) ?? ""
+        }.value
+    }
+
+    private nonisolated static func surgeNetworkTunnelStatus() async throws -> String {
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+            process.arguments = ["--nc", "list"]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0 else {
+                let message = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "scutil --nc list exited with \(process.terminationStatus)")
+            }
+
+            let text = String(data: output, encoding: .utf8) ?? ""
+            let surgeLines = text
+                .split(separator: "\n")
+                .map(String.init)
+                .filter { $0.localizedCaseInsensitiveContains("surge") }
+
+            guard !surgeLines.isEmpty else {
+                return "No Surge VPN service listed"
+            }
+            if surgeLines.contains(where: { $0.localizedCaseInsensitiveContains("Connected") }) {
+                return "Surge VPN service appears connected"
+            }
+            return "Surge VPN service listed but not connected"
+        }.value
+    }
+
+    private nonisolated static func openSurge(_ candidate: SurgeAppSnapshot) async throws {
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            if let bundleIdentifier = candidate.bundleIdentifier, !bundleIdentifier.isEmpty {
+                process.arguments = ["-b", bundleIdentifier]
+            } else if let bundlePath = candidate.bundlePath, !bundlePath.isEmpty {
+                process.arguments = [bundlePath]
+            } else {
+                process.arguments = ["-a", candidate.appName.isEmpty ? "Surge" : candidate.appName]
+            }
+
+            let errorPipe = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let message = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "open exited with \(process.terminationStatus)")
+            }
+        }.value
     }
 
     private nonisolated static func networkServiceListOutput() async throws -> String {
@@ -1254,6 +2261,7 @@ final class WorkbenchStore: ObservableObject {
         }
 
         await refreshSystemProxyStatus(updateStatusText: false)
+        await refreshSurgeStatus(updateStatusText: false)
         await refreshPacketTunnelStatus(updateStatusText: false)
 
         await appendPolicyDiagnostics()
@@ -1263,8 +2271,8 @@ final class WorkbenchStore: ObservableObject {
                 name: "Configured Proxy",
                 transport: "networksetup",
                 target: networkServiceName,
-                status: systemProxyStatus.activation == .active ? .passed : .failed,
-                detail: systemProxyStatus.summary,
+                status: packetTunnelConnected ? .info : (systemProxyStatus.activation == .active ? .passed : .failed),
+                detail: packetTunnelConnected ? "Packet Tunnel is active; macOS proxy settings are not required" : systemProxyStatus.summary,
                 durationMilliseconds: nil
             )
         )
@@ -1287,6 +2295,16 @@ final class WorkbenchStore: ObservableObject {
                 target: "blaze Packet Tunnel",
                 status: packetTunnelConnected ? .passed : .info,
                 detail: packetTunnelStatusText,
+                durationMilliseconds: nil
+            )
+        )
+        await appendConnectivityResult(
+            ConnectivityTestResult(
+                name: "Surge State",
+                transport: "External Proxy",
+                target: surgeAppSnapshot.restoreLabel,
+                status: surgeConflictTestStatus,
+                detail: surgeConflictTestDetail,
                 durationMilliseconds: nil
             )
         )
@@ -1341,28 +2359,15 @@ final class WorkbenchStore: ObservableObject {
             )
         }
 
-        for target in ConnectivityTarget.defaultTargets {
-            let httpResult = await ConnectivitySocketProbe.httpConnect(
-                target: target,
-                proxyPort: proxyListenPort
-            )
-            await appendConnectivityResult(httpResult)
+        await runTargetConnectivityProbes()
 
-            let fetchResult = await ConnectivityHTTPFetchProbe.fetch(
-                target: target,
-                proxyPort: proxyListenPort
-            )
-            await appendConnectivityResult(fetchResult)
-
-            let socksResult = await ConnectivitySocketProbe.socks5Connect(
-                target: target,
-                proxyPort: socksListenPort
-            )
-            await appendConnectivityResult(socksResult)
+        let blockingFailures = Self.blockingConnectivityFailures(in: connectivityTestResults).count
+        let warnings = connectivityTestResults.filter { $0.status == .failed && !$0.isBlockingStartupFailure }.count
+        if blockingFailures == 0 {
+            statusText = warnings == 0 ? "Connectivity diagnostics passed" : "Connectivity diagnostics passed with \(warnings) warning\(warnings == 1 ? "" : "s")"
+        } else {
+            statusText = "Connectivity diagnostics found \(blockingFailures) blocking issue\(blockingFailures == 1 ? "" : "s")"
         }
-
-        let failures = connectivityTestResults.filter { $0.status == .failed }.count
-        statusText = failures == 0 ? "Connectivity diagnostics passed" : "Connectivity diagnostics found \(failures) issue\(failures == 1 ? "" : "s")"
         await refreshProxyEvents()
     }
 
@@ -1400,7 +2405,7 @@ final class WorkbenchStore: ObservableObject {
             modeStatus = .passed
         case .global:
             modeDetail = "Global mode bypasses profile rules and routes everything through \(resolvedGlobalProxyPolicy)"
-            modeStatus = .failed
+            modeStatus = .passed
         case .direct:
             modeDetail = "Direct mode bypasses proxy outbounds"
             modeStatus = .failed
@@ -1508,6 +2513,75 @@ final class WorkbenchStore: ObservableObject {
     private func appendConnectivityResult(_ result: ConnectivityTestResult) async {
         connectivityTestResults.append(result)
         await proxyLogStore.append(result.proxyEvent)
+        updateStartupConnectivityProgress(latest: result)
+    }
+
+    private func runTargetConnectivityProbes() async {
+        let targets = ConnectivityTarget.defaultTargets
+        let httpPort = proxyListenPort
+        let socksPort = socksListenPort
+
+        await withTaskGroup(of: ConnectivityTestResult.self) { group in
+            for target in targets {
+                group.addTask {
+                    await ConnectivitySocketProbe.httpConnect(
+                        target: target,
+                        proxyPort: httpPort
+                    )
+                }
+                group.addTask {
+                    await ConnectivityHTTPFetchProbe.fetch(
+                        target: target,
+                        proxyPort: httpPort
+                    )
+                }
+                group.addTask {
+                    await ConnectivitySocketProbe.socks5Connect(
+                        target: target,
+                        proxyPort: socksPort
+                    )
+                }
+            }
+
+            for await result in group {
+                await appendConnectivityResult(result)
+            }
+        }
+    }
+
+    private func updateStartupConnectivityProgress(latest result: ConnectivityTestResult) {
+        guard startupWorkflowRunning,
+              startupWorkflowSteps.first(where: { $0.id == 7 })?.status == .running
+        else {
+            return
+        }
+
+        let completed = connectivityTestResults.count
+        let blockingFailures = Self.blockingConnectivityFailures(in: connectivityTestResults).count
+        let warningFailures = connectivityTestResults.filter { $0.status == .failed && !$0.isBlockingStartupFailure }.count
+        let failureText: String
+        if blockingFailures > 0 {
+            failureText = "\(blockingFailures) blocking failure\(blockingFailures == 1 ? "" : "s")"
+        } else if warningFailures > 0 {
+            failureText = "\(warningFailures) warning\(warningFailures == 1 ? "" : "s")"
+        } else {
+            failureText = "no failures"
+        }
+
+        setStartupStep(
+            7,
+            status: .running,
+            detail: "\(completed)/\(Self.expectedConnectivityResultCount) checks; \(failureText); latest \(result.name) \(result.transport): \(result.status.rawValue)",
+            target: "Diagnostics \(completed)/\(Self.expectedConnectivityResultCount)"
+        )
+    }
+
+    private static var expectedConnectivityResultCount: Int {
+        13 + ConnectivityTarget.defaultTargets.count * 3
+    }
+
+    private static func blockingConnectivityFailures(in results: [ConnectivityTestResult]) -> [ConnectivityTestResult] {
+        results.filter(\.isBlockingStartupFailure)
     }
 
     private func startProxyEventRefresh() {
@@ -1593,6 +2667,14 @@ final class WorkbenchStore: ObservableObject {
             .appendingPathComponent("rule-set-cache.json", isDirectory: false)
     }
 
+    private nonisolated static func startupWatchdogRecordURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base
+            .appendingPathComponent("blaze", isDirectory: true)
+            .appendingPathComponent("startup-watchdog-recovery.txt", isDirectory: false)
+    }
+
     private func activeRoutingProfile() -> ProxyProfile {
         let expanded = profile.replacingRules(profile.expandedRules(ruleSetsByURL: ruleSetRulesByURL))
         switch proxyRoutingMode {
@@ -1664,6 +2746,7 @@ private struct ConnectivityTarget: Sendable {
     var name: String
     var url: URL
     var expectedStatus: ClosedRange<Int>
+    var fetchMethod = "HEAD"
 
     static let defaultTargets: [ConnectivityTarget] = [
         ConnectivityTarget(name: "Google", url: URL(string: "https://www.google.com/generate_204")!, expectedStatus: 204...204),
@@ -1676,8 +2759,8 @@ private enum ConnectivityHTTPFetchProbe {
     static func fetch(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
         let start = Date()
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 25
-        configuration.timeoutIntervalForResource = 30
+        configuration.timeoutIntervalForRequest = 12
+        configuration.timeoutIntervalForResource = 18
         configuration.waitsForConnectivity = false
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -1696,7 +2779,10 @@ private enum ConnectivityHTTPFetchProbe {
         }
 
         var request = URLRequest(url: target.url)
+        request.httpMethod = target.fetchMethod
         request.setValue("blaze-connectivity-test", forHTTPHeaderField: "User-Agent")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("close", forHTTPHeaderField: "Connection")
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         do {

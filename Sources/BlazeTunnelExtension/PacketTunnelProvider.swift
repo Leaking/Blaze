@@ -42,10 +42,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.ipv6Settings = ipv6
         }
 
-        let dnsServers = configuration.engineKind == .hev && configuration.enableFakeIPDNS
-            ? ["198.19.0.1"]
-            : ["9.9.9.9", "1.1.1.1"]
-        let dns = NEDNSSettings(servers: dnsServers)
+        let dns = NEDNSSettings(servers: configuration.tunnelDNSServers)
         dns.matchDomains = [""]
         settings.dnsSettings = dns
 

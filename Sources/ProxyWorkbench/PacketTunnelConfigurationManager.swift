@@ -166,6 +166,110 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
     }
 }
 
+struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
+    static let nativeVirtualDNSServer = "198.18.0.2"
+    static let hevMapDNSServer = "198.19.0.1"
+    static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+
+    var packetEngine: String
+    var httpHost: String
+    var httpPort: Int
+    var socksHost: String
+    var socksPort: Int
+    var dnsOverHTTPSURL: String
+    var excludedIPv4Addresses: [String]
+    var suppressIPv6DNS: Bool
+    var enableFakeIPDNS: Bool
+    var enableUDPRelay: Bool
+    var enableProxySettings: Bool
+    var enableDNSNetworkFallback: Bool
+    var enableIPv6Blackhole: Bool
+    var hevLibraryDirectory: String?
+    var hevUDPMode: String
+
+    init(providerConfiguration: [String: Any]?) {
+        packetEngine = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
+        httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
+        httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
+        socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
+        socksPort = Self.intValue(providerConfiguration?["socksPort"], defaultValue: 19081)
+        dnsOverHTTPSURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
+        excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
+        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
+        enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
+        enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
+        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+    }
+
+    var tunnelDNSServers: [String] {
+        guard enableFakeIPDNS else {
+            return Self.fallbackDNSServers
+        }
+        return packetEngine == "hev" ? [Self.hevMapDNSServer] : [Self.nativeVirtualDNSServer]
+    }
+
+    var engineDescription: String {
+        packetEngine == "hev" ? "HEV socks5 tunnel" : "Native TCP shim"
+    }
+
+    var listenerSummary: String {
+        "HTTP \(httpHost):\(httpPort), SOCKS5 \(socksHost):\(socksPort)"
+    }
+
+    var dnsSummary: String {
+        guard enableFakeIPDNS else {
+            return "\(tunnelDNSServers.joined(separator: ", ")) system fallback; fake-IP DNS disabled"
+        }
+        return "\(tunnelDNSServers.joined(separator: ", ")) -> \(dnsOverHTTPSURL)"
+    }
+
+    var exclusionSummary: String {
+        guard !excludedIPv4Addresses.isEmpty else {
+            return "No upstream bypass addresses"
+        }
+        let preview = excludedIPv4Addresses.prefix(8).joined(separator: ", ")
+        let suffix = excludedIPv4Addresses.count > 8 ? ", +\(excludedIPv4Addresses.count - 8) more" : ""
+        return "\(excludedIPv4Addresses.count): \(preview)\(suffix)"
+    }
+
+    private static func stringValue(_ value: Any?, defaultValue: String) -> String {
+        optionalStringValue(value) ?? defaultValue
+    }
+
+    private static func optionalStringValue(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func intValue(_ value: Any?, defaultValue: Int) -> Int {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return defaultValue
+    }
+
+    private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return defaultValue
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        (value as? [String]) ?? []
+    }
+}
+
 @MainActor
 enum PacketTunnelConfigurationManager {
     static let localizedDescription = "blaze Packet Tunnel"
@@ -260,6 +364,15 @@ enum PacketTunnelConfigurationManager {
             }
         }
         return try JSONDecoder().decode(PacketTunnelDiagnosticsSnapshot.self, from: response)
+    }
+
+    static func configurationSnapshot() async throws -> PacketTunnelConfigurationSnapshot {
+        let manager = try await loadExistingManager()
+        try await loadFromPreferences(manager)
+        guard let tunnelProtocol = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+            throw PacketTunnelConfigurationError.missingProtocolConfiguration
+        }
+        return PacketTunnelConfigurationSnapshot(providerConfiguration: tunnelProtocol.providerConfiguration)
     }
 
     private static func loadOrCreateManager() async throws -> NETunnelProviderManager {
