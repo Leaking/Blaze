@@ -14,6 +14,11 @@ json_value() {
     /usr/bin/plutil -extract "$key" raw -o - - 2>/dev/null || true
 }
 
+staple_and_assess() {
+    xcrun stapler staple "$APP_PATH"
+    spctl --assess --type execute --verbose=4 "$APP_PATH"
+}
+
 if [[ ! -d "$APP_PATH" ]]; then
     echo "App bundle not found: $APP_PATH" >&2
     exit 1
@@ -28,7 +33,10 @@ ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 accepted_submission_id=""
 for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     echo "Submitting notarization attempt $attempt/$MAX_ATTEMPTS"
-    submit_json="$(xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --output-format json)"
+    if ! submit_json="$(xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --output-format json 2>&1)"; then
+        echo "$submit_json" >&2
+        exit 1
+    fi
     submission_id="$(printf '%s' "$submit_json" | json_value id)"
     if [[ -z "$submission_id" ]]; then
         echo "$submit_json" >&2
@@ -41,7 +49,15 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     while ((elapsed < MAX_WAIT_SECONDS)); do
         sleep "$POLL_INTERVAL_SECONDS"
         elapsed=$((elapsed + POLL_INTERVAL_SECONDS))
-        info_json="$(xcrun notarytool info "$submission_id" --keychain-profile "$NOTARY_PROFILE" --output-format json)"
+        if ! info_json="$(xcrun notarytool info "$submission_id" --keychain-profile "$NOTARY_PROFILE" --output-format json 2>&1)"; then
+            echo "notarytool info failed after ${elapsed}s; trying stapler ticket lookup." >&2
+            echo "$info_json" >&2
+            if staple_and_assess; then
+                accepted_submission_id="$submission_id"
+                break 2
+            fi
+            continue
+        fi
         status="$(printf '%s' "$info_json" | json_value status)"
         echo "Notarization status after ${elapsed}s: ${status:-unknown}"
 
@@ -67,5 +83,4 @@ if [[ -z "$accepted_submission_id" ]]; then
 fi
 
 echo "Notarization accepted: $accepted_submission_id"
-xcrun stapler staple "$APP_PATH"
-spctl --assess --type execute --verbose=4 "$APP_PATH"
+staple_and_assess
