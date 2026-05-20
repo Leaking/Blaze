@@ -57,10 +57,13 @@ struct ConnectivityTestResult: Identifiable, Hashable, Sendable {
             return false
         }
         if transport == "HTTP Fetch" {
-            return name == "Google"
-        }
-        if transport == "SOCKS5 CONNECT", name != "Google" {
             return false
+        }
+        if transport == "SOCKS5 CONNECT" {
+            return false
+        }
+        if transport == "SOCKS5 Fetch" {
+            return true
         }
         return true
     }
@@ -1300,6 +1303,8 @@ final class WorkbenchStore: ObservableObject {
             "reason=\(reason)",
             "watchdog=\(startupWatchdogText)",
             "packetTunnel=\(packetTunnelStatusText)",
+            "packetTunnelConfig=\(packetTunnelConfigurationText)",
+            "packetTunnelDiagnostics=\(packetTunnelDiagnosticsText)",
             "surge=\(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)",
             "connectivityResults=\(connectivityTestResults.count)",
             "blockingFailures=\(Self.blockingConnectivityFailures(in: connectivityTestResults).map { "\($0.name) \($0.transport): \($0.detail)" }.joined(separator: "; "))",
@@ -2728,24 +2733,28 @@ final class WorkbenchStore: ObservableObject {
         let socksPort = socksListenPort
 
         for target in targets {
-            await appendConnectivityResult(
-                await ConnectivityHTTPFetchProbe.fetch(
-                    target: target,
-                    proxyPort: httpPort
-                )
+            async let httpFetch = ConnectivityCurlFetchProbe.fetch(
+                target: target,
+                transport: "HTTP Fetch",
+                proxy: .http(port: httpPort)
             )
-            await appendConnectivityResult(
-                await ConnectivitySocketProbe.httpConnect(
-                    target: target,
-                    proxyPort: httpPort
-                )
+            async let httpConnect = ConnectivitySocketProbe.httpConnect(
+                target: target,
+                proxyPort: httpPort
             )
-            await appendConnectivityResult(
-                await ConnectivitySocketProbe.socks5Connect(
-                    target: target,
-                    proxyPort: socksPort
-                )
+            async let socksConnect = ConnectivitySocketProbe.socks5Connect(
+                target: target,
+                proxyPort: socksPort
             )
+            async let socksFetch = ConnectivityCurlFetchProbe.fetch(
+                target: target,
+                transport: "SOCKS5 Fetch",
+                proxy: .socks5(port: socksPort)
+            )
+
+            for result in await [httpFetch, httpConnect, socksConnect, socksFetch] {
+                await appendConnectivityResult(result)
+            }
         }
     }
 
@@ -2777,7 +2786,7 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private static var expectedConnectivityResultCount: Int {
-        13 + ConnectivityTarget.defaultTargets.count * 3
+        13 + ConnectivityTarget.defaultTargets.count * 4
     }
 
     private static func blockingConnectivityFailures(in results: [ConnectivityTestResult]) -> [ConnectivityTestResult] {
@@ -2955,8 +2964,22 @@ private struct ConnectivityTarget: Sendable {
     ]
 }
 
-private enum ConnectivityHTTPFetchProbe {
-    static func fetch(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
+private enum ConnectivityCurlFetchProbe {
+    enum ProxyKind: Sendable {
+        case http(port: Int)
+        case socks5(port: Int)
+
+        var arguments: [String] {
+            switch self {
+            case .http(let port):
+                ["--proxy", "http://127.0.0.1:\(port)"]
+            case .socks5(let port):
+                ["--socks5-hostname", "127.0.0.1:\(port)"]
+            }
+        }
+    }
+
+    static func fetch(target: ConnectivityTarget, transport: String, proxy: ProxyKind) async -> ConnectivityTestResult {
         await Task.detached(priority: .utility) {
             let start = Date()
             let process = Process()
@@ -2967,13 +2990,13 @@ private enum ConnectivityHTTPFetchProbe {
                 "--show-error",
                 "--output", "/dev/null",
                 "--write-out", "%{http_code}",
-                "--proxy", "http://127.0.0.1:\(proxyPort)",
                 "--connect-timeout", "8",
                 "--max-time", "18",
                 "--http1.1",
                 "--user-agent", "blaze-connectivity-test",
                 "--header", "Accept: */*"
             ]
+            arguments.append(contentsOf: proxy.arguments)
             if target.fetchMethod.uppercased() == "HEAD" {
                 arguments.append("--head")
             } else {
@@ -2993,7 +3016,7 @@ private enum ConnectivityHTTPFetchProbe {
                 let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "HTTP Fetch",
+                    transport: transport,
                     target: target.url.host ?? target.url.absoluteString,
                     status: .failed,
                     detail: "curl launch failed: \(error)",
@@ -3017,7 +3040,7 @@ private enum ConnectivityHTTPFetchProbe {
                     .joined(separator: "; ")
                 return ConnectivityTestResult(
                     name: target.name,
-                    transport: "HTTP Fetch",
+                    transport: transport,
                     target: target.url.host ?? target.url.absoluteString,
                     status: .failed,
                     detail: detail.isEmpty ? "curl exited with \(process.terminationStatus)" : "curl exited with \(process.terminationStatus): \(detail)",
@@ -3026,10 +3049,10 @@ private enum ConnectivityHTTPFetchProbe {
             }
             return ConnectivityTestResult(
                 name: target.name,
-                transport: "HTTP Fetch",
+                transport: transport,
                 target: target.url.host ?? target.url.absoluteString,
                 status: target.expectedStatus.contains(code) ? .passed : .failed,
-                detail: "curl HTTP fetch returned \(code)",
+                detail: "curl fetch returned \(code)",
                 durationMilliseconds: elapsed
             )
         }.value

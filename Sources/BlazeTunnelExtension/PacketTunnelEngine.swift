@@ -49,7 +49,7 @@ struct PacketTunnelRuntimeConfiguration {
         enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
         enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
         hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
-        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
     }
 
     var tunnelDNSServers: [String] {

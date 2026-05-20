@@ -205,7 +205,7 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
         enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
         enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
         hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
-        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
     }
 
     var tunnelDNSServers: [String] {
@@ -286,9 +286,9 @@ enum PacketTunnelConfigurationManager {
         socksPort: Int,
         excludedIPv4Addresses: [String] = [],
         tunnelMTU: Int = PacketTunnelConfigurationSnapshot.defaultTunnelMTU,
-        packetEngine: String = "native",
+        packetEngine: String = "hev",
         hevLibraryDirectory: String? = nil,
-        hevUDPMode: String = "udp"
+        hevUDPMode: String = "tcp"
     ) async throws {
         let manager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
