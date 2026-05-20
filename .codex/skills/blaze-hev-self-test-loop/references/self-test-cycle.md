@@ -48,6 +48,8 @@ systemextensionsctl list | rg "com\\.chenhuazhao\\.blaze" || true
 
 Make one focused change for the current blocker. Prefer changes that leave better evidence in the Tests page and `startup-watchdog-recovery.txt`.
 
+Before editing, update `docs/hev-self-test-validation-log.md` with the cycle hypothesis, planned validation, target build number, and the evidence that triggered the change.
+
 ```zsh
 swift test
 swift build -c release --product blaze
@@ -55,6 +57,39 @@ git status --short
 git add <changed-files>
 git commit -m "<focused message>"
 ```
+
+After verification, update the same log entry with commands, pass/fail status, recovery behavior, notarization submission id or status, and next decision.
+
+## Main Branch Reference
+
+The current branch stores a read-only snapshot of `main` in `.codex/reference/main-branch`. Use it to compare previous PacketTunnelEngine, TCP shim, DNS, proxy, app lifecycle, scripts, and test logic without switching worktrees.
+
+```zsh
+MAIN_REF=".codex/reference/main-branch"
+cat "$MAIN_REF/.source-commit"
+diff -ru "$MAIN_REF/Sources/BlazeTunnelExtension" Sources/BlazeTunnelExtension | sed -n '1,240p' || true
+diff -ru "$MAIN_REF/Sources/ProxyWorkbench" Sources/ProxyWorkbench | sed -n '1,240p' || true
+git diff --stat main...HEAD
+```
+
+Use the snapshot critically:
+
+- Prefer current-branch HEV logic when it better matches transparent tunnel requirements.
+- Reuse main-branch behavior only when logs show the HEV branch regressed a proven lifecycle, DNS, route, or recovery behavior.
+- Copy small proven patterns manually, never bulk overwrite current HEV work.
+- If the snapshot gets stale, refresh it with `rm -rf .codex/reference/main-branch && mkdir -p .codex/reference/main-branch && git archive main | tar -x -C .codex/reference/main-branch && git rev-parse main > .codex/reference/main-branch/.source-commit`, then commit the snapshot update.
+
+## Protocol And External Reference Pass
+
+When Step 7, HEV, TCP, DNS, routing, SOCKS5, or upstream behavior is ambiguous, read `references/network-protocol-debugging.md` and do an external reference pass before choosing a fix.
+
+Minimum pass:
+
+1. Map the failure to layers: macOS Network Extension lifecycle, TUN route, DNS/FakeIP, lwIP/TCP state, SOCKS5/HTTP CONNECT, Trojan upstream dial, interface binding, MTU/MSS, timeout/concurrency, selected policy/node health.
+2. Search official repos/docs and issue trackers for the closest failure pattern.
+3. Compare at least two independent projects when possible, such as HEV/tun2socks, sing-box/mihomo/Xray, and gVisor/tun2socks.
+4. Record useful references and rejected hypotheses in `docs/hev-self-test-validation-log.md`.
+5. Do not copy incompatible code. Use outside projects primarily for architecture, protocol expectations, debugging counters, timeout behavior, and lifecycle checks.
 
 ## Package A Build
 

@@ -7,7 +7,7 @@ description: Run the Blaze HEV socks5 tunnel self-test and repair loop for this 
 
 Use this skill when the task is to continue the Blaze HEV integration loop end to end: inspect the latest test evidence, make one focused code improvement, build, notarize, install when allowed, run the guarded startup workflow, and repeat until the test evidence is clean.
 
-For command details, read [self-test-cycle.md](references/self-test-cycle.md) before running the loop.
+For command details, read [self-test-cycle.md](references/self-test-cycle.md) before running the loop. For protocol bugs, also read [network-protocol-debugging.md](references/network-protocol-debugging.md).
 
 ## Operating Rules
 
@@ -17,6 +17,9 @@ For command details, read [self-test-cycle.md](references/self-test-cycle.md) be
 - If validation fails, restore Surge, stop Blaze VPN, quit/kill Blaze, capture logs, then continue analysis and code changes.
 - Verify app build, bundled system extension build, active system extension build, code signature, and Gatekeeper trust before interpreting HEV connectivity failures.
 - If notarization waiting exceeds 10 minutes, resubmit instead of waiting indefinitely.
+- Keep `docs/hev-self-test-validation-log.md` updated for every self-test cycle, including build number, notarization status, hypothesis, fix, commands, watchdog result, and next decision.
+- Use `.codex/reference/main-branch` as a read-only snapshot of `main`. Compare it with the current branch when the HEV branch behavior looks suspicious, but do not assume either side is correct without evidence.
+- When network behavior is ambiguous, check comparable open-source proxy/tunnel projects and issue patterns before narrowing to one layer. Treat their code as reference only unless license and integration risk are explicitly reviewed.
 - Commit focused changes after tests/build pass.
 
 ## Loop Summary
@@ -27,12 +30,14 @@ For command details, read [self-test-cycle.md](references/self-test-cycle.md) be
    - Bundled extension build differs from active extension build: fix extension activation/update before Step 7 work.
    - Step 7 SOCKS5 Fetch timeout or partial connectivity: inspect HEV/TCP/proxy path and recent DIAG lines.
    - Watchdog did not restore Surge or quit Blaze: fix recovery first.
-3. Make the smallest code change that improves the current blocker and also improves visible diagnostics when useful.
-4. Run `swift test` and `swift build -c release --product blaze`.
-5. Commit the code.
-6. Package the next build number with `scripts/build-app.sh`, then submit notarization.
-7. After notarization is accepted and stapled, install only if authorized, then run the startup workflow with the external watchdog.
-8. Capture results, mark the watchdog done, and either stop on clean evidence or continue the loop.
+3. For protocol-shaped failures, compare across layers: DNS/FakeIP, TUN route, lwIP/TCP state, SOCKS5/HTTP CONNECT, upstream policy, interface binding, MTU/MSS, timeout, and macOS Network Extension lifecycle.
+4. Consult the main-branch snapshot and external project references for similar handling patterns; record what was useful and what was rejected.
+5. Make the smallest code change that improves the current blocker and also improves visible diagnostics when useful.
+6. Run `swift test` and `swift build -c release --product blaze`.
+7. Update the validation log, then commit the code.
+8. Package the next build number with `scripts/build-app.sh`, then submit notarization.
+9. After notarization is accepted and stapled, install only if authorized, then run the startup workflow with the external watchdog.
+10. Capture results, mark the watchdog done, update the validation log again, and either stop on clean evidence or continue the loop.
 
 ## Evidence To Preserve
 

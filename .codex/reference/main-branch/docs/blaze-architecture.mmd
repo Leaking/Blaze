@@ -1,0 +1,47 @@
+flowchart LR
+    subgraph Apps["macOS Applications"]
+        A1["Browser / CLI / Desktop Apps"]
+        A2["Apps without proxy settings"]
+    end
+
+    subgraph System["macOS Network Stack"]
+        S1["System HTTP/SOCKS Proxy\n(optional explicit mode)"]
+        S2["Routing Table + utun\n(Packet Tunnel mode)"]
+        S3["DNS Resolver"]
+    end
+
+    subgraph BlazeApp["blaze.app"]
+        H1["Local HTTP Proxy\n127.0.0.1:19080"]
+        H2["Local SOCKS5 Proxy\n127.0.0.1:19081"]
+        H3["Rule Engine / Policy Groups"]
+        H4["Traffic Logs / Diagnostics"]
+    end
+
+    subgraph Extension["Blaze System Extension"]
+        E1["PacketTunnelProvider\nNetwork Settings"]
+        E2["PacketTunnelEngine\nTCP state + tun2socks"]
+        E3["DNS Proxy\nDoH + fake-ip + AAAA suppress"]
+        E4["UDP Policy\nDNS handled, QUIC fallback / relay gated"]
+    end
+
+    subgraph Outbound["Outbound Path"]
+        O1["DIRECT"]
+        O2["Trojan / HTTP / SOCKS5 nodes"]
+        O3["Excluded Routes + Physical Interface\navoid tunnel loopback"]
+    end
+
+    A1 --> S1
+    A2 --> S2
+    S1 --> H1
+    S2 --> E1
+    S3 --> E3
+    E1 --> E2
+    E2 --> H2
+    E3 --> E2
+    H1 --> H3
+    H2 --> H3
+    H3 --> O1
+    H3 --> O2
+    O2 --> O3
+    O1 --> O3
+    H3 --> H4

@@ -1,0 +1,476 @@
+<title>Blaze 网络接管技术白皮书：macOS Network Extension、透明代理与 Surge 对标</title>
+
+<callout emoji="🧭" background-color="light-blue" border-color="blue">
+  <p><b>核心结论：</b>Blaze 要对标 Surge，关键不是“开一个本地代理端口”，而是把 <b>HTTP/SOCKS 显式代理</b>、<b>macOS Packet Tunnel</b>、<b>DNS fake-ip</b>、<b>tun2socks TCP 状态机</b>、<b>UDP/QUIC 策略</b> 和 <b>出站绕过</b> 组合成一条稳定的数据面。</p>
+  <p>这份文档按网络工程和 macOS 开发两个视角解释：为什么没配代理的软件也能被接管，HTTP/SOCKS 和透明代理有什么差别，Surge 大致做对了哪些事情，以及 Blaze 当前还差哪些工程能力。</p>
+</callout>
+
+<h1>1. 先建立三个概念：显式代理、系统代理、透明接管</h1>
+
+<p>macOS 上“代理”不是一个单一概念。很多调试混乱来自把不同层级的代理混在一起看。</p>
+
+<table>
+  <colgroup><col width="150"/><col width="210"/><col width="170"/><col width="260"/><col width="210"/></colgroup>
+  <thead>
+    <tr>
+      <th background-color="light-gray">层级</th>
+      <th background-color="light-gray">入口</th>
+      <th background-color="light-gray">应用是否知道</th>
+      <th background-color="light-gray">能接管什么</th>
+      <th background-color="light-gray">Blaze 对应能力</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>应用内代理</b></td>
+      <td>App 自己填代理地址</td>
+      <td>知道</td>
+      <td>只接管该 App 显式发给代理的流量</td>
+      <td>HTTP 19080 / SOCKS5 19081</td>
+    </tr>
+    <tr>
+      <td><b>系统代理</b></td>
+      <td>Network Service 的 HTTP/SOCKS proxy settings</td>
+      <td>多数 App 知道</td>
+      <td>遵循系统代理的 HTTP、HTTPS CONNECT、SOCKS 流量</td>
+      <td>Settings 里的 macOS Proxy Setup</td>
+    </tr>
+    <tr>
+      <td><b>透明接管</b></td>
+      <td>Network Extension Packet Tunnel + utun + 路由</td>
+      <td>不知道</td>
+      <td>被路由导入 tunnel 的 IP packet</td>
+      <td>System Extension + PacketTunnelEngine</td>
+    </tr>
+  </tbody>
+</table>
+
+<callout emoji="✅" background-color="light-green" border-color="green">
+  <p><b>判断标准：</b>如果一个 App 没有配置代理，但启用 Blaze 后仍然被接管，那一定不是 HTTP/SOCKS 显式代理在工作，而是系统路由把它的 IP 包交给了 Packet Tunnel。</p>
+</callout>
+
+<hr/>
+
+<h1>2. 一张架构图：Blaze 的完整数据面</h1>
+
+<whiteboard type="svg"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760">
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b4d; }
+      .label { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b4d; }
+      .text { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344563; }
+      .small { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5e6c84; }
+      .box { rx: 14; stroke-width: 2; }
+      .arrow { stroke: #6b778c; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#6b778c"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1280" height="760" fill="#f7f9fc"/>
+  <text x="640" y="48" text-anchor="middle" class="title">Blaze 数据面：从 App Socket 到远端代理节点</text>
+
+  <rect x="50" y="95" width="230" height="560" fill="#e8f1ff" stroke="#4c9aff" class="box"/>
+  <text x="165" y="130" text-anchor="middle" class="label">macOS Apps</text>
+  <rect x="80" y="165" width="170" height="78" fill="#ffffff" stroke="#4c9aff" class="box"/>
+  <text x="165" y="195" text-anchor="middle" class="text">浏览器 / CLI</text>
+  <text x="165" y="218" text-anchor="middle" class="small">可能读系统代理</text>
+  <rect x="80" y="275" width="170" height="78" fill="#ffffff" stroke="#4c9aff" class="box"/>
+  <text x="165" y="305" text-anchor="middle" class="text">桌面软件</text>
+  <text x="165" y="328" text-anchor="middle" class="small">可能完全不配代理</text>
+  <rect x="80" y="385" width="170" height="78" fill="#ffffff" stroke="#4c9aff" class="box"/>
+  <text x="165" y="415" text-anchor="middle" class="text">系统服务</text>
+  <text x="165" y="438" text-anchor="middle" class="small">普通 socket API</text>
+
+  <rect x="325" y="95" width="250" height="560" fill="#fff4e5" stroke="#ffab00" class="box"/>
+  <text x="450" y="130" text-anchor="middle" class="label">macOS Network Stack</text>
+  <rect x="355" y="165" width="190" height="80" fill="#ffffff" stroke="#ffab00" class="box"/>
+  <text x="450" y="194" text-anchor="middle" class="text">System Proxy</text>
+  <text x="450" y="218" text-anchor="middle" class="small">HTTP / SOCKS 显式入口</text>
+  <rect x="355" y="295" width="190" height="80" fill="#ffffff" stroke="#ffab00" class="box"/>
+  <text x="450" y="324" text-anchor="middle" class="text">Routing Table</text>
+  <text x="450" y="348" text-anchor="middle" class="small">默认路由导入 utun</text>
+  <rect x="355" y="425" width="190" height="80" fill="#ffffff" stroke="#ffab00" class="box"/>
+  <text x="450" y="454" text-anchor="middle" class="text">DNS Resolver</text>
+  <text x="450" y="478" text-anchor="middle" class="small">查询被 tunnel 接管</text>
+
+  <rect x="630" y="95" width="270" height="560" fill="#e3fcef" stroke="#36b37e" class="box"/>
+  <text x="765" y="130" text-anchor="middle" class="label">Blaze 本地数据面</text>
+  <rect x="660" y="165" width="210" height="80" fill="#ffffff" stroke="#36b37e" class="box"/>
+  <text x="765" y="194" text-anchor="middle" class="text">HTTP Proxy 19080</text>
+  <text x="765" y="218" text-anchor="middle" class="small">HTTP / CONNECT</text>
+  <rect x="660" y="285" width="210" height="80" fill="#ffffff" stroke="#36b37e" class="box"/>
+  <text x="765" y="314" text-anchor="middle" class="text">SOCKS5 Proxy 19081</text>
+  <text x="765" y="338" text-anchor="middle" class="small">tun2socks 的 TCP 出口</text>
+  <rect x="660" y="405" width="210" height="80" fill="#ffffff" stroke="#36b37e" class="box"/>
+  <text x="765" y="434" text-anchor="middle" class="text">Rule Engine</text>
+  <text x="765" y="458" text-anchor="middle" class="small">规则 / 策略组 / 日志</text>
+  <rect x="660" y="525" width="210" height="80" fill="#ffffff" stroke="#36b37e" class="box"/>
+  <text x="765" y="554" text-anchor="middle" class="text">DNS fake-ip Store</text>
+  <text x="765" y="578" text-anchor="middle" class="small">198.18/15 到域名映射</text>
+
+  <rect x="955" y="95" width="275" height="560" fill="#f3f0ff" stroke="#6554c0" class="box"/>
+  <text x="1092" y="130" text-anchor="middle" class="label">System Extension</text>
+  <rect x="985" y="175" width="215" height="86" fill="#ffffff" stroke="#6554c0" class="box"/>
+  <text x="1092" y="205" text-anchor="middle" class="text">PacketTunnelProvider</text>
+  <text x="1092" y="229" text-anchor="middle" class="small">安装地址 / 路由 / DNS</text>
+  <rect x="985" y="305" width="215" height="86" fill="#ffffff" stroke="#6554c0" class="box"/>
+  <text x="1092" y="335" text-anchor="middle" class="text">PacketTunnelEngine</text>
+  <text x="1092" y="359" text-anchor="middle" class="small">TCP 状态机 + tun2socks</text>
+  <rect x="985" y="435" width="215" height="86" fill="#ffffff" stroke="#6554c0" class="box"/>
+  <text x="1092" y="465" text-anchor="middle" class="text">UDP / QUIC Policy</text>
+  <text x="1092" y="489" text-anchor="middle" class="small">DNS 处理，非 DNS UDP 策略</text>
+
+  <path d="M250 204 C300 204, 305 204, 355 204" class="arrow"/>
+  <path d="M250 314 C300 314, 305 335, 355 335" class="arrow"/>
+  <path d="M250 424 C305 424, 310 465, 355 465" class="arrow"/>
+  <path d="M545 205 C590 205, 615 205, 660 205" class="arrow"/>
+  <path d="M545 335 C710 335, 815 348, 985 348" class="arrow"/>
+  <path d="M545 465 C600 465, 610 565, 660 565" class="arrow"/>
+  <path d="M985 348 C925 348, 920 325, 870 325" class="arrow"/>
+  <path d="M870 325 C920 325, 930 348, 985 348" class="arrow"/>
+  <path d="M870 445 C905 445, 930 445, 985 445" class="arrow"/>
+
+  <rect x="385" y="680" width="520" height="46" rx="12" fill="#ffffff" stroke="#c1c7d0"/>
+  <text x="645" y="709" text-anchor="middle" class="text">关键约束：Blaze 自己的远端代理出站必须走 excluded route / 物理网卡，避免再次进入 tunnel 形成回环。</text>
+</svg></whiteboard>
+
+<h1>3. HTTP 代理和 SOCKS5 代理：显式代理的底座</h1>
+
+<grid>
+  <column width-ratio="0.5">
+    <h2>HTTP Proxy</h2>
+    <p>HTTP 代理是应用层协议。普通 HTTP 请求会把完整 URL 发给代理；HTTPS 通过 <code>CONNECT host:port</code> 建立隧道。</p>
+    <ul>
+      <li>优点：浏览器和多数系统组件原生支持。</li>
+      <li>缺点：只适合明确支持代理的客户端；不读系统代理的 App 不会走它。</li>
+      <li>Blaze 入口：<code>127.0.0.1:19080</code>。</li>
+    </ul>
+  </column>
+  <column width-ratio="0.5">
+    <h2>SOCKS5 Proxy</h2>
+    <p>SOCKS5 更接近传输层。它不关心 HTTP 方法，只帮客户端连接目标地址和端口，之后做字节转发。</p>
+    <ul>
+      <li>优点：协议无关，HTTP、HTTPS、SSH 都可以走。</li>
+      <li>缺点：仍然需要客户端显式连接代理。</li>
+      <li>Blaze 入口：<code>127.0.0.1:19081</code>。</li>
+    </ul>
+  </column>
+</grid>
+
+<pre lang="text" caption="HTTP CONNECT 的基本语义"><code>Client -&gt; HTTP Proxy: CONNECT www.google.com:443
+HTTP Proxy -&gt; Target: TCP connect www.google.com:443
+HTTP Proxy -&gt; Client: HTTP/1.1 200 Connection Established
+Client &lt;-&gt; Target: TLS bytes tunneled by proxy</code></pre>
+
+<p>Blaze 的本地 HTTP/SOCKS5 代理不仅是给浏览器手动使用的入口，也是透明接管路径的出口。Packet Tunnel 把原始 TCP payload 转成 SOCKS5 CONNECT，再交给本地 SOCKS5 proxy 根据规则选择 DIRECT 或远端代理节点。</p>
+
+<hr/>
+
+<h1>4. 没有配置代理的软件，为什么也能被接管</h1>
+
+<callout emoji="📌" background-color="light-yellow" border-color="yellow">
+  <p>透明接管的关键不是修改 App，而是改变系统路由。App 仍然调用普通 socket API，macOS 内核把它发出的 IP 包路由到 Network Extension 创建的 <code>utun</code> 虚拟网卡。</p>
+</callout>
+
+<whiteboard type="svg"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 560">
+  <defs>
+    <style>
+      .h { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b4d; }
+      .t { font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344563; }
+      .s { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6b778c; }
+      .lane { rx: 16; stroke-width: 2; }
+      .node { rx: 12; stroke-width: 2; }
+      .arrow { stroke: #6b778c; stroke-width: 2.5; fill: none; marker-end: url(#arr); }
+    </style>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#6b778c"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1240" height="560" fill="#fafbfc"/>
+  <text x="620" y="42" text-anchor="middle" class="h">显式代理 vs 透明接管</text>
+
+  <rect x="60" y="90" width="520" height="400" fill="#e8f1ff" stroke="#4c9aff" class="lane"/>
+  <text x="320" y="125" text-anchor="middle" class="h">显式代理路径</text>
+  <rect x="100" y="170" width="150" height="70" fill="#fff" stroke="#4c9aff" class="node"/>
+  <text x="175" y="198" text-anchor="middle" class="t">App</text>
+  <text x="175" y="220" text-anchor="middle" class="s">知道代理地址</text>
+  <rect x="330" y="170" width="190" height="70" fill="#fff" stroke="#4c9aff" class="node"/>
+  <text x="425" y="198" text-anchor="middle" class="t">Blaze HTTP/SOCKS</text>
+  <text x="425" y="220" text-anchor="middle" class="s">19080 / 19081</text>
+  <rect x="215" y="325" width="210" height="70" fill="#fff" stroke="#4c9aff" class="node"/>
+  <text x="320" y="353" text-anchor="middle" class="t">远端代理 / DIRECT</text>
+  <text x="320" y="375" text-anchor="middle" class="s">Trojan / HTTP / SOCKS5</text>
+  <path d="M250 205 H330" class="arrow"/>
+  <path d="M425 240 C425 285, 390 315, 360 325" class="arrow"/>
+
+  <rect x="660" y="90" width="520" height="400" fill="#e3fcef" stroke="#36b37e" class="lane"/>
+  <text x="920" y="125" text-anchor="middle" class="h">透明接管路径</text>
+  <rect x="700" y="170" width="150" height="70" fill="#fff" stroke="#36b37e" class="node"/>
+  <text x="775" y="198" text-anchor="middle" class="t">App</text>
+  <text x="775" y="220" text-anchor="middle" class="s">不知道代理存在</text>
+  <rect x="910" y="170" width="210" height="70" fill="#fff" stroke="#36b37e" class="node"/>
+  <text x="1015" y="198" text-anchor="middle" class="t">Routing Table + utun</text>
+  <text x="1015" y="220" text-anchor="middle" class="s">默认路由进入 tunnel</text>
+  <rect x="700" y="325" width="210" height="70" fill="#fff" stroke="#36b37e" class="node"/>
+  <text x="805" y="353" text-anchor="middle" class="t">PacketTunnelEngine</text>
+  <text x="805" y="375" text-anchor="middle" class="s">TCP state + tun2socks</text>
+  <rect x="970" y="325" width="170" height="70" fill="#fff" stroke="#36b37e" class="node"/>
+  <text x="1055" y="353" text-anchor="middle" class="t">Local SOCKS5</text>
+  <text x="1055" y="375" text-anchor="middle" class="s">再走规则和上游</text>
+  <path d="M850 205 H910" class="arrow"/>
+  <path d="M1015 240 C1015 290, 900 320, 850 325" class="arrow"/>
+  <path d="M910 360 H970" class="arrow"/>
+</svg></whiteboard>
+
+<p>对没配代理的软件来说，关键链路是：</p>
+
+<ol>
+  <li seq="auto">应用调用 <code>connect()</code>，以为自己要连真实目标。</li>
+  <li seq="auto">macOS 路由表把公网流量导入 <code>utun</code>。</li>
+  <li seq="auto">System Extension 的 <code>NEPacketTunnelFlow.readPackets</code> 读到原始 IPv4 packet。</li>
+  <li seq="auto">Blaze 在用户态处理 TCP SYN、ACK、payload、FIN、RST。</li>
+  <li seq="auto">payload 被桥接到本地 SOCKS5，再进入规则引擎和远端代理。</li>
+  <li seq="auto">上游返回的数据被重新封装成反向 TCP packet，经 <code>writePackets</code> 写回系统。</li>
+</ol>
+
+<hr/>
+
+<h1>5. DNS fake-ip：把 IP 连接重新绑定回域名</h1>
+
+<p>透明代理的最大信息损失是：TCP packet 里只有目标 IP，没有域名。规则系统却经常需要按域名匹配，例如 <code>DOMAIN-SUFFIX,google.com,Proxy</code>。</p>
+
+<whiteboard type="svg"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 520">
+  <defs>
+    <style>
+      .h { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b4d; }
+      .t { font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344563; }
+      .s { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6b778c; }
+      .b { rx: 14; stroke-width: 2; }
+      .arrow { stroke: #6b778c; stroke-width: 2.4; fill: none; marker-end: url(#a); }
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#6b778c"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1180" height="520" fill="#ffffff"/>
+  <text x="590" y="44" text-anchor="middle" class="h">DNS fake-ip 让透明连接重新获得域名语义</text>
+
+  <rect x="60" y="110" width="190" height="82" fill="#e8f1ff" stroke="#4c9aff" class="b"/>
+  <text x="155" y="140" text-anchor="middle" class="t">App DNS Query</text>
+  <text x="155" y="164" text-anchor="middle" class="s">www.google.com A?</text>
+
+  <rect x="330" y="110" width="210" height="82" fill="#f3f0ff" stroke="#6554c0" class="b"/>
+  <text x="435" y="140" text-anchor="middle" class="t">Blaze DNS Proxy</text>
+  <text x="435" y="164" text-anchor="middle" class="s">DoH / cache / AAAA suppress</text>
+
+  <rect x="620" y="110" width="220" height="82" fill="#e3fcef" stroke="#36b37e" class="b"/>
+  <text x="730" y="140" text-anchor="middle" class="t">Fake-IP Store</text>
+  <text x="730" y="164" text-anchor="middle" class="s">198.18.4.18 → www.google.com</text>
+
+  <rect x="930" y="110" width="190" height="82" fill="#fff4e5" stroke="#ffab00" class="b"/>
+  <text x="1025" y="140" text-anchor="middle" class="t">App Connect</text>
+  <text x="1025" y="164" text-anchor="middle" class="s">198.18.4.18:443</text>
+
+  <rect x="280" y="300" width="250" height="88" fill="#f7f9fc" stroke="#c1c7d0" class="b"/>
+  <text x="405" y="331" text-anchor="middle" class="t">PacketTunnelEngine</text>
+  <text x="405" y="356" text-anchor="middle" class="s">看到 fake-ip，反查域名</text>
+
+  <rect x="650" y="300" width="250" height="88" fill="#f7f9fc" stroke="#c1c7d0" class="b"/>
+  <text x="775" y="331" text-anchor="middle" class="t">SOCKS5 CONNECT</text>
+  <text x="775" y="356" text-anchor="middle" class="s">domain = www.google.com</text>
+
+  <path d="M250 151 H330" class="arrow"/>
+  <path d="M540 151 H620" class="arrow"/>
+  <path d="M840 151 H930" class="arrow"/>
+  <path d="M1025 192 C1025 260, 540 260, 455 300" class="arrow"/>
+  <path d="M530 344 H650" class="arrow"/>
+</svg></whiteboard>
+
+<table>
+  <colgroup><col width="220"/><col width="430"/><col width="300"/></colgroup>
+  <thead>
+    <tr>
+      <th background-color="light-gray">DNS 模式</th>
+      <th background-color="light-gray">优点</th>
+      <th background-color="light-gray">风险</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>真实 IP 直返</td>
+      <td>简单，兼容传统网络工具。</td>
+      <td>后续 TCP 只有 IP，规则难以恢复域名语义。</td>
+    </tr>
+    <tr>
+      <td>fake-ip</td>
+      <td>把 <code>IP → domain</code> 映射保留到连接阶段，适合透明代理规则引擎。</td>
+      <td>需要完整处理保留地址段、缓存过期、反查和绕过。</td>
+    </tr>
+    <tr>
+      <td>AAAA 抑制</td>
+      <td>在 IPv6 转发未完成前减少系统优先走 IPv6 导致的失败。</td>
+      <td>只是阶段性策略，最终仍应支持 IPv6。</td>
+    </tr>
+  </tbody>
+</table>
+
+<hr/>
+
+<h1>6. Surge 的原理可以拆成哪些能力</h1>
+
+<p>Surge 的内部实现不是公开协议，但从 macOS 平台能力、用户可见功能和代理产品通用架构看，可以把它理解为一套高度整合的数据面与控制面。</p>
+
+<table>
+  <colgroup><col width="180"/><col width="300"/><col width="300"/><col width="300"/></colgroup>
+  <thead>
+    <tr>
+      <th background-color="light-gray">能力</th>
+      <th background-color="light-gray">Surge 成熟体验</th>
+      <th background-color="light-gray">Blaze 当前实现</th>
+      <th background-color="light-gray">对标重点</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>本地代理</td>
+      <td>HTTP/SOCKS/增强模式统一调度。</td>
+      <td>已有 HTTP 19080 与 SOCKS5 19081。</td>
+      <td>协议覆盖、诊断、连接统计和稳定性。</td>
+    </tr>
+    <tr>
+      <td>透明 TCP</td>
+      <td>大多数 App 无感接管。</td>
+      <td>Packet Tunnel + 初步 TCP tun2socks。</td>
+      <td>乱序、重传、窗口、半关闭、backpressure。</td>
+    </tr>
+    <tr>
+      <td>DNS</td>
+      <td>fake-ip / real-ip / 规则联动。</td>
+      <td>fake-ip、DoH、AAAA 抑制已落地。</td>
+      <td>缓存、分流 DNS、污染防护、域名恢复。</td>
+    </tr>
+    <tr>
+      <td>UDP/QUIC</td>
+      <td>可代理、可拒绝、可回退。</td>
+      <td>非 DNS UDP 返回 ICMP unreachable；UDP relay gated。</td>
+      <td>完整 UDP NAT、SOCKS5 UDP ASSOCIATE、QUIC 策略。</td>
+    </tr>
+    <tr>
+      <td>IPv6</td>
+      <td>按规则处理 IPv6 或抑制。</td>
+      <td>IPv6 转发未完成，当前抑制 AAAA。</td>
+      <td>IPv6 packet parse、fake-ip、路由、回包。</td>
+    </tr>
+    <tr>
+      <td>绕过与防回环</td>
+      <td>代理自身出站不会被自己捕获。</td>
+      <td>excluded routes + 物理网卡绑定 + 诊断。</td>
+      <td>更可靠的上游 IP 刷新、接口变化监听。</td>
+    </tr>
+  </tbody>
+</table>
+
+<callout emoji="⚠️" background-color="light-red" border-color="red">
+  <p><b>工程教训：</b>Packet Tunnel 已经通过路由接管流量时，不应再默认把 <code>NEProxySettings</code> 指向 <code>127.0.0.1:19080</code>。否则系统代理路径和透明 tunnel 路径混在一起，会干扰验证，也可能影响 Blaze 自身上游出站。</p>
+</callout>
+
+<hr/>
+
+<h1>7. Blaze 当前实现状态：从“能代理”走向“能透明接管”</h1>
+
+<grid>
+  <column width-ratio="0.5">
+    <h2>已经具备</h2>
+    <ul>
+      <li>本地 HTTP proxy：<code>127.0.0.1:19080</code>。</li>
+      <li>本地 SOCKS5 proxy：<code>127.0.0.1:19081</code>。</li>
+      <li>Packet Tunnel/System Extension scaffold。</li>
+      <li>PacketTunnelEngine 的 TCP forwarding 基础。</li>
+      <li>DNS fake-ip、DoH、AAAA 抑制。</li>
+      <li>非 DNS UDP 通过 ICMP unreachable 促使 QUIC 回退。</li>
+      <li>出站上游绕过 tunnel 回环的路由与接口诊断。</li>
+      <li>Developer ID 签名、公证和 systemextension profile 工程链路。</li>
+    </ul>
+  </column>
+  <column width-ratio="0.5">
+    <h2>仍需加强</h2>
+    <ul>
+      <li>完整 TCP 生命周期：拥塞窗口、重传上限、SACK、半关闭边界。</li>
+      <li>UDP relay 默认化：QUIC、DNS、STUN、普通 UDP NAT 生命周期。</li>
+      <li>IPv6 转发：IPv6 packet parse、路由、DNS AAAA 与 fake-ip 策略。</li>
+      <li>规则引擎覆盖：DOMAIN-SET、PROCESS-NAME、GEOIP、脚本规则等。</li>
+      <li>性能：zero-copy、批处理、连接池、日志降采样。</li>
+      <li>可观测性：每条流的路由、DNS 映射、上游连接、失败原因。</li>
+    </ul>
+  </column>
+</grid>
+
+<p>最近一次关键修复方向是让 Packet Tunnel 默认不写 <code>NEProxySettings</code>，避免透明接管路径被系统 HTTP proxy 路径污染。同时 TCP forwarder 增加 pending write buffer 限流，把客户端窗口和上游连接前的缓存容量绑定，降低慢上游或失败上游造成的内存和重传压力。</p>
+
+<hr/>
+
+<h1>8. 推荐验证方法：不要只看“Google 打不开”</h1>
+
+<p>网络问题必须分层验证。一个“打不开 Google”可能来自 DNS、系统代理、tunnel 路由、TCP 状态机、远端代理节点、UDP/QUIC 或 Surge 共存状态。</p>
+
+<table>
+  <colgroup><col width="180"/><col width="430"/><col width="320"/></colgroup>
+  <thead>
+    <tr>
+      <th background-color="light-gray">验证层</th>
+      <th background-color="light-gray">命令</th>
+      <th background-color="light-gray">看什么</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>本地 listener</td>
+      <td><code>lsof -nP -iTCP:19080 -iTCP:19081 -sTCP:LISTEN</code></td>
+      <td>Blaze app 是否真的在监听。</td>
+    </tr>
+    <tr>
+      <td>显式 HTTP</td>
+      <td><code>curl --proxy http://127.0.0.1:19080 http://www.gstatic.com/generate_204</code></td>
+      <td>本地 HTTP proxy 和上游节点是否可用。</td>
+    </tr>
+    <tr>
+      <td>显式 SOCKS5</td>
+      <td><code>curl --proxy socks5h://127.0.0.1:19081 http://www.gstatic.com/generate_204</code></td>
+      <td>本地 SOCKS5 和规则出口是否可用。</td>
+    </tr>
+    <tr>
+      <td>VPN 状态</td>
+      <td><code>scutil --nc status "blaze Packet Tunnel"</code></td>
+      <td>是否 Connected，主接口是否为 utun。</td>
+    </tr>
+    <tr>
+      <td>透明 HTTP</td>
+      <td><code>curl --noproxy '*' http://www.gstatic.com/generate_204</code></td>
+      <td>是否走 Packet Tunnel，而不是系统代理。</td>
+    </tr>
+    <tr>
+      <td>透明 HTTPS</td>
+      <td><code>curl --noproxy '*' -I https://www.google.com/generate_204</code></td>
+      <td>TLS over TCP 是否能经 tun2socks 完整返回。</td>
+    </tr>
+  </tbody>
+</table>
+
+<callout emoji="❗" background-color="light-yellow" border-color="yellow">
+  <p>调试时不要 kill Surge。当前机器访问 ChatGPT/Codex 依赖 Surge。需要做对比时，只从 Surge UI 短时间关闭开关，测试完成后恢复。</p>
+</callout>
+
+<hr/>
+
+<h1>9. 结论：Blaze 的正确演进方向</h1>
+
+<p>Blaze 的方向应该从“代理客户端”升级为“macOS 网络接管系统”。这意味着后续开发优先级应围绕数据面闭环，而不是单纯堆 UI。</p>
+
+<checkbox done="true">本地 HTTP/SOCKS5 代理可用，并能做规则出口。</checkbox>
+<checkbox done="true">Packet Tunnel/System Extension 已能安装和启动。</checkbox>
+<checkbox done="true">DNS fake-ip 和 AAAA 抑制已成为透明接管的基础能力。</checkbox>
+<checkbox done="false">TCP forwarding 需要继续补强复杂生命周期和性能。</checkbox>
+<checkbox done="false">UDP/QUIC relay 需要从 gated 实现进入默认可用路径。</checkbox>
+<checkbox done="false">IPv6 必须补齐，否则长期依赖 AAAA 抑制会影响兼容性。</checkbox>
+<checkbox done="false">需要把 Surge 级别的可观测性做进 UI：每条连接为什么走这个策略、DNS 如何映射、上游如何绕过、失败在哪里。</checkbox>
+
+<callout emoji="🏁" background-color="light-green" border-color="green">
+  <p><b>一句话总结：</b>HTTP/SOCKS 是入口，Packet Tunnel 是接管点，tun2socks 是桥，DNS fake-ip 是域名语义恢复，excluded routes 是防回环护栏。把这五件事做稳，Blaze 才真正接近 Surge 的透明网络接管能力。</p>
+</callout>
