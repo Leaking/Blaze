@@ -3194,13 +3194,16 @@ private struct ConnectivityTarget: Sendable {
 // blocking work onto a dedicated DispatchQueue, which has a much larger
 // thread pool dedicated to exactly this use case.
 private enum ConnectivityBlockingDispatcher {
-    private static let queue = DispatchQueue(label: "com.chenhuazhao.blaze.connectivity-blocking", qos: .utility, attributes: .concurrent)
     private static let logger = Logger(subsystem: "com.chenhuazhao.blaze", category: "ConnectivityDispatcher")
 
     static func run<T: Sendable>(label: String, _ work: @escaping @Sendable () -> T) async -> T {
         logger.notice("[\(label, privacy: .public)] dispatch")
         return await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
-            queue.async {
+            // Build 53 showed a private DispatchQueue submitted 12 work blocks
+            // simultaneously but none ever executed. Switching to the system
+            // global queue (which guarantees a real OS-managed pool with many
+            // ready threads) eliminates the "queue was real but empty" hazard.
+            DispatchQueue.global(qos: .userInitiated).async {
                 logger.notice("[\(label, privacy: .public)] work start")
                 let result = work()
                 logger.notice("[\(label, privacy: .public)] work done")
