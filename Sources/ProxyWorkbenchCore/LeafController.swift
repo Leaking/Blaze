@@ -257,8 +257,55 @@ public actor LeafController {
         }
         if let running = process, running.isRunning {
             await internalStopProcess(running)
+        } else {
+            // Even if our own controller doesn't know about a leaf process,
+            // a previous app run may have left one alive (the host app was
+            // SIGKILLed before it could call stop()). Sweep it up so the
+            // new launch doesn't get EADDRINUSE on port 19081/19080.
+            terminateOrphanLeafProcesses()
         }
         try await launch(configuration: configuration, attempt: 0)
+    }
+
+    /// Send SIGTERM (then SIGKILL after 1s) to any process whose executable
+    /// path matches our own leaf binary URL. Defensive cleanup for the
+    /// "host app died, leaf stayed alive" scenario.
+    private func terminateOrphanLeafProcesses() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-axo", "pid=,comm="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return
+        }
+        guard let data = try? pipe.fileHandleForReading.readToEnd(),
+              let output = String(data: data, encoding: .utf8) else {
+            return
+        }
+        let myPath = binaryURL.standardizedFileURL.path
+        var killed: [Int32] = []
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let firstSpace = trimmed.firstIndex(of: " ") else { continue }
+            let pidString = String(trimmed[..<firstSpace])
+            let command = String(trimmed[trimmed.index(after: firstSpace)...]).trimmingCharacters(in: .whitespaces)
+            guard command == myPath, let pid = Int32(pidString), pid != getpid() else { continue }
+            kill(pid, SIGTERM)
+            killed.append(pid)
+        }
+        guard !killed.isEmpty else { return }
+        let pidsString = killed.map(String.init).joined(separator: ",")
+        leafLogger.notice("orphan leaf cleanup pids=\(pidsString, privacy: .public)")
+        // Give them 1s to exit cleanly, then SIGKILL holdouts.
+        Thread.sleep(forTimeInterval: 1.0)
+        for pid in killed {
+            kill(pid, SIGKILL)
+        }
     }
 
     /// Stop leaf and prevent the supervisor from restarting it.

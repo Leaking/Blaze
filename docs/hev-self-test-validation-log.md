@@ -171,7 +171,29 @@ Record every self-test cycle here before and after validation. Include the build
 - Remaining risk: leaf does not have Blaze's per-connection event logging hooked up; `proxy-events.log` still receives STARTUP entries but not per-connection SOCKS5/HTTP entries (those used to come from the Swift LocalSOCKS5ProxyServer). Need a follow-up to either parse leaf's log or add an inbound observer.
 - Next decision: delete `LocalSOCKS5ProxyServer.swift`, `LocalHTTPProxyServer.swift`, `TrojanUpstreamConnection.swift`, `RuleEngine.swift` once the leaf path is exercised for a few more days and proxy-events.log parity is closed. Build 55 establishes the architecture is correct.
 
-## Loop infrastructure delivered in this session (Builds 47→55)
+## 2026-05-21 03:11 Asia/Shanghai - Build 56 (recovery resilience)
+
+- Commit: `c4eb7d5` + orphan cleanup follow-up.
+- Notarization: id `(see notarize-56.log if retained)`, Accepted, stapled.
+- Triggering evidence: user feedback "经常无法让 claude code 恢复，特别是断网重连之后" — recovery from Wi-Fi reconnect / sleep-wake was unreliable on the legacy code path; want to make sure leaf-backed Blaze stays self-healing.
+- Hypothesis: three failure modes need guarding: (a) leaf process crashes silently, (b) physical interface name flips so leaf is bound to a dead `en1`, (c) host app dies and leaves an orphan leaf occupying 19080/19081.
+- Fix/change:
+  1. `LeafController` gains a supervisor: `generation` counter + `stopRequested` flag distinguish intentional stop from crash; on unexpected exit the actor reschedules a respawn with exponential backoff (200/400/800/1600/3200ms, cap 5s). A `LifecycleEvent` stream surfaces start/exit/restart/stop to the host.
+  2. `WorkbenchStore` subscribes to those events via a Sendable wrapper class so the closure crosses actor boundaries safely. UI flags `proxyServerRunning`/`socksServerRunning` stay accurate even when leaf restarts itself.
+  3. `WorkbenchStore` starts an `NWPathMonitor` at init; when the primary physical interface name changes (Wi-Fi reconnect, switch from Wi-Fi to wired, etc.), it calls `ensureLeafRunning()` which rebuilds the config with the new boundif and applies it.
+  4. On every `start(with:)` where the controller has no live process, `LeafController` first sweeps any orphan leaf process whose `comm` matches our binary path and SIGTERMs it (then SIGKILL after 1s). Defends against "host app was force-quit and leaf survived" leaking listen sockets.
+- Validation commands: `swift test` (99 passed); `BLAZE_BUILD_NUMBER=56 ./scripts/build-app.sh`; notarize + staple; install; guarded startup workflow.
+- Startup workflow result: **Steps 1-7 PASSED again**. `Step 7 Passed: 25 checks completed [Diagnostics 25/25]` at 2026-05-20T19:11:47Z, **24 seconds** after Step 7 started. Two consecutive clean Step 7 passes (build 55: 26s, build 56: 24s).
+- Watchdog result: external watchdog fired (no auto-quit on success), in-app recovery + leaf-stop path executed cleanly. `Step 8 Passed: Restarted Surge: com.nssurge.surge-mac; VPN connected`.
+- Supervisor evidence (from os.log `com.chenhuazhao.blaze:Leaf`):
+  - `leaf started pid=61346 attempt=0`
+  - `leaf stopping pid=61346` (owner-initiated)
+  - `leaf exited pid=61346 status=15 reason=2` (SIGTERM, clean shutdown)
+  - Zero spurious restarts (stopRequested was true).
+- Remaining risk: health probe for "process alive but socket unresponsive" not yet implemented; supervisor only reacts when the process exits. Acceptable for now since the failure modes we observed are exit-based, not deadlock-based.
+- Next decision: ship build 56. Future work: TCP probe-based health check; per-connection event logging from leaf into `proxy-events.log` for parity with the deleted Swift listener.
+
+## Loop infrastructure delivered in this session (Builds 47→56)
 
 - End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
 - `setStartupStep` writes a `STARTUP` event for every status transition (including running→running detail changes after the latest tweak) → `proxy-events.log` now contains a complete timeline per workflow run.
