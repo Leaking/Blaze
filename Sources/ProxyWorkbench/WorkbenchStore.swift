@@ -1085,6 +1085,17 @@ final class WorkbenchStore: ObservableObject {
             }
         }
 
+        for app in Self.runningSurgeApplications() {
+            _ = app.forceTerminate()
+        }
+
+        for _ in 0..<30 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if Self.runningSurgeApplications().isEmpty {
+                return prepared
+            }
+        }
+
         return false
     }
 
@@ -1116,10 +1127,15 @@ final class WorkbenchStore: ObservableObject {
             }
 
             let shouldRestoreVPN = candidate.hasConnectedNetworkTunnel
+            var lastVPNStartError: Error?
             for attempt in 0..<16 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if shouldRestoreVPN {
-                    try? await Self.startSurgeVPNServiceIfAvailable()
+                    do {
+                        try await Self.startSurgeVPNServiceIfAvailable()
+                    } catch {
+                        lastVPNStartError = error
+                    }
                 }
                 await refreshSurgeStatus(updateStatusText: false)
                 let surgeVPNConnected = surgeAppSnapshot.hasConnectedNetworkTunnel
@@ -1133,7 +1149,7 @@ final class WorkbenchStore: ObservableObject {
                 }
             }
             let detail = surgeAppSnapshot.isRunning
-                ? "Surge app is running but VPN did not reconnect: \(surgeAppSnapshot.networkTunnelStatus)"
+                ? "Surge app is running but VPN did not reconnect: \(surgeAppSnapshot.networkTunnelStatus)\(lastVPNStartError.map { "; start error: \($0)" } ?? "")"
                 : "Requested Surge restart, but no running Surge app was detected"
             setStartupStep(stepID, status: .failed, detail: detail)
             return false
