@@ -17,9 +17,6 @@ struct BlazeApp: App {
                 .environmentObject(store)
                 .tint(.indigo)
                 .frame(minWidth: 1080, minHeight: 720)
-                .onOpenURL { url in
-                    store.handleAutomationURL(url)
-                }
                 .task {
                     appDelegate.store = store
                     store.loadInitialProfile()
@@ -147,14 +144,41 @@ struct BlazeApp: App {
     }
 }
 
+@MainActor
 final class BlazeAppDelegate: NSObject, NSApplicationDelegate {
-    weak var store: WorkbenchStore?
+    weak var store: WorkbenchStore? {
+        didSet {
+            drainPendingAutomationURLs()
+        }
+    }
+    private var pendingAutomationURLs: [URL] = []
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleAutomationURLs(urls)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         store?.restoreSystemProxyForTermination()
+    }
+
+    private func handleAutomationURLs(_ urls: [URL]) {
+        guard let store else {
+            pendingAutomationURLs.append(contentsOf: urls)
+            return
+        }
+        for url in urls {
+            store.handleAutomationURL(url)
+        }
+    }
+
+    private func drainPendingAutomationURLs() {
+        guard store != nil, !pendingAutomationURLs.isEmpty else { return }
+        let urls = pendingAutomationURLs
+        pendingAutomationURLs.removeAll()
+        handleAutomationURLs(urls)
     }
 }
