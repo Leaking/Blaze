@@ -205,10 +205,21 @@ chmod +x "$TUNNEL_MACOS_DIR/$TUNNEL_PRODUCT"
 
 HEV_DYLIBS=()
 if [[ -d "$HEV_LIBRARY_DIR" ]]; then
+    shopt -s nullglob
     HEV_DYLIBS=("$HEV_LIBRARY_DIR"/*.dylib)
+    shopt -u nullglob
 fi
 
-if [[ "${#HEV_DYLIBS[@]}" -gt 0 && -f "${HEV_DYLIBS[0]}" ]]; then
+if [[ "${#HEV_DYLIBS[@]}" -eq 0 || ! -f "${HEV_DYLIBS[0]}" ]]; then
+    if [[ "${BLAZE_ALLOW_MISSING_HEV_DYLIB:-0}" == "1" ]]; then
+        echo "WARNING: HEV dylibs not found in $HEV_LIBRARY_DIR; bundle will have no HEV tunnel engine and Step 5 will fail at runtime." >&2
+    else
+        echo "ERROR: HEV dylibs not found in $HEV_LIBRARY_DIR." >&2
+        echo "       Run scripts/dev/build-hev-socks5-tunnel-dylibs.sh first, or set BLAZE_HEV_LIBRARY_DIR." >&2
+        echo "       To intentionally build a non-functional bundle, set BLAZE_ALLOW_MISSING_HEV_DYLIB=1." >&2
+        exit 1
+    fi
+else
     mkdir -p "$TUNNEL_FRAMEWORKS_DIR"
     cp "${HEV_DYLIBS[@]}" "$TUNNEL_FRAMEWORKS_DIR"/
 fi

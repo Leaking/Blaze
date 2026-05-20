@@ -1715,11 +1715,62 @@ final class WorkbenchStore: ObservableObject {
         target: String? = nil
     ) {
         guard let index = startupWorkflowSteps.firstIndex(where: { $0.id == stepID }) else { return }
+        let previousStatus = startupWorkflowSteps[index].status
+        let previousDetail = startupWorkflowSteps[index].detail
         startupWorkflowSteps[index].status = status
         startupWorkflowSteps[index].detail = detail
         startupWorkflowSteps[index].updatedAt = Date()
         if let target {
             startupWorkflowSteps[index].target = target
+        }
+        if previousStatus != status || (status == .failed && previousDetail != detail) {
+            recordStartupStepEvent(
+                step: stepID,
+                status: status,
+                detail: detail,
+                target: target ?? startupWorkflowSteps[index].target
+            )
+        }
+    }
+
+    private func recordStartupStepEvent(
+        step: Int,
+        status: StartupWorkflowStepStatus,
+        detail: String,
+        target: String?
+    ) {
+        let logStatus: String
+        switch status {
+        case .pending, .info:
+            return
+        case .running:
+            logStatus = "Info"
+        case .passed:
+            logStatus = "Passed"
+        case .failed:
+            logStatus = "Failed"
+        case .actionNeeded:
+            logStatus = "Info"
+        }
+        let note: String
+        if let target, !target.isEmpty {
+            note = "Step \(step) \(status.rawValue): \(detail) [\(target)]"
+        } else {
+            note = "Step \(step) \(status.rawValue): \(detail)"
+        }
+        let event = ProxyServerEvent(
+            method: "STARTUP",
+            target: "step-\(step)",
+            host: "blaze",
+            port: 0,
+            policy: "Startup Workflow",
+            status: logStatus,
+            rule: "Workflow",
+            note: note
+        )
+        Task {
+            await proxyLogStore.append(event)
+            await refreshProxyEvents()
         }
     }
 
