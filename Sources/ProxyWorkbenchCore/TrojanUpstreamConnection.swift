@@ -2,7 +2,10 @@ import CommonCrypto
 import Darwin
 import Foundation
 import Network
+import os.log
 import Security
+
+private let trojanUpstreamLogger = Logger(subsystem: "com.chenhuazhao.blaze", category: "TrojanUpstream")
 
 final class TrojanUpstreamConnection: @unchecked Sendable {
     private let connection: NWConnection
@@ -54,7 +57,11 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         parameters.prohibitedInterfaceTypes = [.loopback, .other]
         parameters.allowFastOpen = false
         let queue = DispatchQueue(label: "blaze.Trojan.\(UUID().uuidString)")
+        let resolveStart = DispatchTime.now()
         let resolvedHost = try await UpstreamEndpointResolver.connectionHost(for: upstream.host)
+        let resolveMillis = elapsedMillis(since: resolveStart)
+        let connectionTag = UUID().uuidString.prefix(8)
+        trojanUpstreamLogger.info("[\(connectionTag, privacy: .public)] resolve host=\(upstream.host, privacy: .public) -> \(resolvedHost.address, privacy: .public) in \(resolveMillis)ms; destination=\(String(describing: destination), privacy: .public)")
         let connection = NWConnection(host: NWEndpoint.Host(resolvedHost.address), port: port, using: parameters)
         let requestHeader = try TrojanProtocol.requestHeader(password: password, address: destination)
         let upstreamConnection = TrojanUpstreamConnection(
@@ -64,9 +71,23 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
             endpointDescription: resolvedHost.note
         )
 
-        try await upstreamConnection.start(timeout: .seconds(12))
+        let connectStart = DispatchTime.now()
+        do {
+            try await upstreamConnection.start(timeout: .seconds(12), tag: String(connectionTag))
+            let connectMillis = elapsedMillis(since: connectStart)
+            let interfaceName = connection.currentPath?.availableInterfaces.first?.name ?? "?"
+            trojanUpstreamLogger.info("[\(connectionTag, privacy: .public)] ready in \(connectMillis)ms via interface=\(interfaceName, privacy: .public)")
+        } catch {
+            let connectMillis = elapsedMillis(since: connectStart)
+            trojanUpstreamLogger.error("[\(connectionTag, privacy: .public)] connect failed after \(connectMillis)ms: \(String(describing: error), privacy: .public)")
+            throw error
+        }
         upstreamConnection.scheduleDeferredHeaderFlush()
         return upstreamConnection
+    }
+
+    private static func elapsedMillis(since start: DispatchTime) -> UInt64 {
+        (DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000
     }
 
     private static func tlsOptions(for upstream: ProxyNode) -> NWProtocolTLS.Options {
@@ -194,9 +215,16 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         return ProxyTunnelSummary(uploadBytes: upload.bytes, downloadBytes: download.bytes, uploadError: upload.error, downloadError: download.error)
     }
 
-    private func start(timeout: DispatchTimeInterval) async throws {
+    private func start(timeout: DispatchTimeInterval, tag: String = "") async throws {
         let state = ConnectionStartState()
+        let startTime = DispatchTime.now()
+        let timeline = ConnectionStateTimeline()
         connection.stateUpdateHandler = { nwState in
+            let elapsed = (DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
+            timeline.record(state: Self.describe(nwState), elapsedMillis: elapsed)
+            if !tag.isEmpty {
+                trojanUpstreamLogger.debug("[\(tag, privacy: .public)] state=\(Self.describe(nwState), privacy: .public) at \(elapsed)ms")
+            }
             switch nwState {
             case .ready:
                 state.complete(.success(()))
@@ -213,9 +241,26 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         guard state.wait(timeout: timeout) else {
             connection.cancel()
             let diagnostic = UpstreamDNSDiagnostic.fakeIPMessage(for: connection.endpointHost)
-            throw ProxyServerError.trojan(["TLS connection timed out", diagnostic].compactMap(\.self).joined(separator: "; "))
+            let history = timeline.snapshot()
+            throw ProxyServerError.trojan([
+                "TLS connection timed out",
+                "states=\(history)",
+                diagnostic
+            ].compactMap(\.self).joined(separator: "; "))
         }
         try state.result.get()
+    }
+
+    private static func describe(_ state: NWConnection.State) -> String {
+        switch state {
+        case .setup: return "setup"
+        case .waiting(let error): return "waiting(\(error.localizedDescription))"
+        case .preparing: return "preparing"
+        case .ready: return "ready"
+        case .failed(let error): return "failed(\(error.localizedDescription))"
+        case .cancelled: return "cancelled"
+        @unknown default: return "unknown"
+        }
     }
 
     private static func relay(fromClientFD fd: Int32, to upstream: TrojanUpstreamConnection) async -> ProxyRelayResult {
@@ -901,6 +946,23 @@ private extension Data {
     }
 }
 
+
+private final class ConnectionStateTimeline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(String, UInt64)] = []
+
+    func record(state: String, elapsedMillis: UInt64) {
+        lock.lock()
+        entries.append((state, elapsedMillis))
+        lock.unlock()
+    }
+
+    func snapshot() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.map { "\($0.0)@\($0.1)ms" }.joined(separator: ",")
+    }
+}
 
 private final class ConnectionStartState: @unchecked Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
