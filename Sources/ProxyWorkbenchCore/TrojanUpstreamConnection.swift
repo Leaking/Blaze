@@ -54,7 +54,7 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         parameters.prohibitedInterfaceTypes = [.loopback]
         parameters.allowFastOpen = false
         let queue = DispatchQueue(label: "blaze.Trojan.\(UUID().uuidString)")
-        let resolvedHost = await UpstreamEndpointResolver.connectionHost(for: upstream.host)
+        let resolvedHost = try await UpstreamEndpointResolver.connectionHost(for: upstream.host)
         let connection = NWConnection(host: NWEndpoint.Host(resolvedHost.address), port: port, using: parameters)
         let requestHeader = try TrojanProtocol.requestHeader(password: password, address: destination)
         let upstreamConnection = TrojanUpstreamConnection(
@@ -277,6 +277,11 @@ private enum ReceiveResult: Sendable {
 private struct ResolvedUpstreamHost: Sendable {
     var address: String
     var note: String
+    var isPinnedAddress: Bool
+
+    func usingStalePin() -> ResolvedUpstreamHost {
+        ResolvedUpstreamHost(address: address, note: "\(note) (stale DNS pin)", isPinnedAddress: isPinnedAddress)
+    }
 }
 
 private actor PhysicalInterfacePreference {
@@ -376,37 +381,44 @@ public enum ProxyUpstreamResolutionDiagnostics {
 private enum UpstreamEndpointResolver {
     private static let cache = UpstreamResolutionCache()
 
-    static func connectionHost(for host: String) async -> ResolvedUpstreamHost {
+    static func connectionHost(for host: String) async throws -> ResolvedUpstreamHost {
         guard !host.isIPAddressLiteral else {
-            return ResolvedUpstreamHost(address: host, note: host)
+            return ResolvedUpstreamHost(address: host, note: host, isPinnedAddress: true)
         }
 
         if let cached = await cache.value(for: host) {
             return cached
         }
 
-        let resolved = await resolve(host: host)
-        await cache.store(resolved, for: host)
-        return resolved
+        do {
+            let resolved = try await resolve(host: host)
+            await cache.store(resolved, for: host)
+            return resolved
+        } catch {
+            if let stale = await cache.staleValue(for: host), stale.isPinnedAddress {
+                return stale.usingStalePin()
+            }
+            throw error
+        }
     }
 
-    private static func resolve(host: String) async -> ResolvedUpstreamHost {
+    private static func resolve(host: String) async throws -> ResolvedUpstreamHost {
         if let address = await DNSOverHTTPSJSONResolver.resolveA(host).first {
-            return ResolvedUpstreamHost(address: address, note: "\(host) via \(address)")
+            return ResolvedUpstreamHost(address: address, note: "\(host) via \(address)", isPinnedAddress: true)
         }
 
         if let addresses = UpstreamHostDNS.resolvedIPv4AddressStrings(for: host),
            let address = addresses.first(where: { !$0.isFakeIPv4Literal }) {
-            return ResolvedUpstreamHost(address: address, note: "\(host) via \(address) (system DNS)")
+            return ResolvedUpstreamHost(address: address, note: "\(host) via \(address) (system DNS)", isPinnedAddress: true)
         }
 
         if let addresses = UpstreamHostDNS.resolvedIPv4Addresses(for: host),
            !addresses.isEmpty,
            addresses.allSatisfy(UpstreamHostDNS.isFakeIP) {
-            return ResolvedUpstreamHost(address: host, note: "\(host) (fake-ip DNS bypass failed)")
+            throw ProxyServerError.lookup("Upstream DNS bypass failed for \(host): system DNS returned only 198.18.0.0/15 fake-IP addresses")
         }
 
-        return ResolvedUpstreamHost(address: host, note: "\(host) (DNS pinning unavailable)")
+        throw ProxyServerError.lookup("Upstream DNS pinning unavailable for \(host)")
     }
 }
 
@@ -417,15 +429,18 @@ private actor UpstreamResolutionCache {
     }
 
     private var entries: [String: Entry] = [:]
-    private let ttl: TimeInterval = 300
+    private let ttl: TimeInterval = 1_800
 
     func value(for host: String) -> ResolvedUpstreamHost? {
         guard let entry = entries[host] else { return nil }
         if entry.expiresAt > Date() {
             return entry.value
         }
-        entries.removeValue(forKey: host)
         return nil
+    }
+
+    func staleValue(for host: String) -> ResolvedUpstreamHost? {
+        entries[host]?.value
     }
 
     func store(_ value: ResolvedUpstreamHost, for host: String) {
@@ -520,6 +535,9 @@ enum DNSOverHTTPSJSONResolver {
         tcpOptions.noDelay = true
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         parameters.preferNoProxies = true
+        if let preferredInterfaceType = await PhysicalInterfacePreference.shared.current() {
+            parameters.requiredInterfaceType = preferredInterfaceType
+        }
         parameters.prohibitedInterfaceTypes = [.loopback]
         parameters.allowFastOpen = false
 

@@ -375,11 +375,19 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private var startupWatchdogShouldRecover: Bool {
-        guard !startupConnectivityPassed else { return false }
         let vpnOrExternalProxyWasTouched = packetTunnelConnected
             || surgeRestoreCandidate != nil
             || startupWorkflowSteps.contains { $0.id >= 5 && $0.updatedAt != nil }
         return vpnOrExternalProxyWasTouched
+    }
+
+    private var recentCriticalProxyFailures: [ProxyServerEvent] {
+        proxyEvents.filter { event in
+            let note = event.note.lowercased()
+            return note.contains("fake-ip dns bypass failed")
+                || note.contains("upstream dns bypass failed")
+                || note.contains("local dns resolved upstream to 198.18")
+        }
     }
 
     var systemProxyRestoreSummary: String {
@@ -988,6 +996,7 @@ final class WorkbenchStore: ObservableObject {
     }
 
     func stopPacketTunnelAndRestoreSurge() async {
+        stopStartupWatchdog(markCompleted: false)
         await stopPacketTunnel()
         await refreshSurgeStatus(updateStatusText: false)
         guard !packetTunnelConnected else {
@@ -1054,26 +1063,43 @@ final class WorkbenchStore: ObservableObject {
             return true
         }
 
-        await refreshSurgeStatus(updateStatusText: false)
-        if surgeAppSnapshot.isRunning {
-            setStartupStep(stepID, status: .passed, detail: "Surge is already running")
-            return true
-        }
-
         guard let candidate = surgeRestoreCandidate else {
+            await refreshSurgeStatus(updateStatusText: false)
+            if surgeAppSnapshot.isRunning {
+                setStartupStep(stepID, status: .passed, detail: "Surge is already running")
+                return true
+            }
             setStartupStep(stepID, status: .info, detail: "No Surge restore candidate was captured")
             return true
         }
 
         do {
-            try await Self.openSurge(candidate)
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
             await refreshSurgeStatus(updateStatusText: false)
-            if surgeAppSnapshot.isRunning {
-                setStartupStep(stepID, status: .passed, detail: "Restarted Surge: \(surgeAppSnapshot.restoreLabel)")
-                return true
+            if !surgeAppSnapshot.isRunning {
+                try await Self.openSurge(candidate)
             }
-            setStartupStep(stepID, status: .failed, detail: "Requested Surge restart, but no running Surge app was detected")
+
+            let shouldRestoreVPN = candidate.networkTunnelStatus.localizedCaseInsensitiveContains("connected")
+            for attempt in 0..<16 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if shouldRestoreVPN {
+                    try? await Self.startSurgeVPNServiceIfAvailable()
+                }
+                await refreshSurgeStatus(updateStatusText: false)
+                let surgeVPNConnected = surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected")
+                if surgeAppSnapshot.isRunning && (!shouldRestoreVPN || surgeVPNConnected) {
+                    let vpnText = shouldRestoreVPN ? "; VPN connected" : ""
+                    setStartupStep(stepID, status: .passed, detail: "Restarted Surge: \(surgeAppSnapshot.restoreLabel)\(vpnText)")
+                    return true
+                }
+                if attempt == 4, !surgeAppSnapshot.isRunning {
+                    try? await Self.openSurge(candidate)
+                }
+            }
+            let detail = surgeAppSnapshot.isRunning
+                ? "Surge app is running but VPN did not reconnect: \(surgeAppSnapshot.networkTunnelStatus)"
+                : "Requested Surge restart, but no running Surge app was detected"
+            setStartupStep(stepID, status: .failed, detail: detail)
             return false
         } catch {
             setStartupStep(stepID, status: .failed, detail: "Surge restart failed: \(error)")
@@ -1098,8 +1124,11 @@ final class WorkbenchStore: ObservableObject {
         statusText = "Running startup flow..."
         startStartupWatchdog()
         defer {
-            if startupConnectivityPassed {
+            if !startupWatchdogShouldRecover {
                 stopStartupWatchdog(markCompleted: true)
+            } else if let deadline = startupWatchdogDeadline,
+                      startupWatchdogText.hasPrefix("Armed") {
+                startupWatchdogText = "Safety restore at \(deadline.formatted(date: .omitted, time: .standard))"
             }
             startupWorkflowRunning = false
             statusText = startupWorkflowSubtitle
@@ -1215,6 +1244,7 @@ final class WorkbenchStore: ObservableObject {
             "surge=\(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)",
             "connectivityResults=\(connectivityTestResults.count)",
             "blockingFailures=\(Self.blockingConnectivityFailures(in: connectivityTestResults).map { "\($0.name) \($0.transport): \($0.detail)" }.joined(separator: "; "))",
+            "criticalProxyFailures=\(recentCriticalProxyFailures.prefix(6).map { "\($0.host):\($0.port) \($0.note)" }.joined(separator: " || "))",
             ""
         ]
         let text = lines.joined(separator: "\n")
@@ -1971,6 +2001,67 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private nonisolated static func surgeNetworkTunnelStatus() async throws -> String {
+        let text = try await scutilNetworkConnectionListOutput()
+        let surgeLines = text
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.localizedCaseInsensitiveContains("surge") }
+
+        guard !surgeLines.isEmpty else {
+            return "No Surge VPN service listed"
+        }
+        if surgeLines.contains(where: { $0.localizedCaseInsensitiveContains("Connected") }) {
+            return "Surge VPN service appears connected"
+        }
+        return "Surge VPN service listed but not connected"
+    }
+
+    private nonisolated static func startSurgeVPNServiceIfAvailable() async throws {
+        let text = try await scutilNetworkConnectionListOutput()
+        guard let serviceIdentifier = surgeVPNServiceIdentifier(from: text) else {
+            throw NetworkServiceDetectionError.commandFailed("No Surge VPN service identifier found")
+        }
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+            process.arguments = ["--nc", "start", serviceIdentifier]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus != 0 {
+                let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let message = [String(data: output, encoding: .utf8), String(data: errorOutput, encoding: .utf8)]
+                    .compactMap { value -> String? in
+                        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return trimmed.isEmpty ? nil : trimmed
+                    }
+                    .joined(separator: " ")
+                throw NetworkServiceDetectionError.commandFailed(message.isEmpty ? "scutil --nc start exited with \(process.terminationStatus)" : message)
+            }
+        }.value
+    }
+
+    private nonisolated static func surgeVPNServiceIdentifier(from text: String) -> String? {
+        let pattern = #"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        for line in text.split(separator: "\n").map(String.init) where line.localizedCaseInsensitiveContains("surge") {
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            if let match = regex.firstMatch(in: line, range: range),
+               let matchRange = Range(match.range, in: line) {
+                return String(line[matchRange])
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func scutilNetworkConnectionListOutput() async throws -> String {
         try await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
@@ -1991,19 +2082,7 @@ final class WorkbenchStore: ObservableObject {
                 throw NetworkServiceDetectionError.commandFailed(message?.isEmpty == false ? message! : "scutil --nc list exited with \(process.terminationStatus)")
             }
 
-            let text = String(data: output, encoding: .utf8) ?? ""
-            let surgeLines = text
-                .split(separator: "\n")
-                .map(String.init)
-                .filter { $0.localizedCaseInsensitiveContains("surge") }
-
-            guard !surgeLines.isEmpty else {
-                return "No Surge VPN service listed"
-            }
-            if surgeLines.contains(where: { $0.localizedCaseInsensitiveContains("Connected") }) {
-                return "Surge VPN service appears connected"
-            }
-            return "Surge VPN service listed but not connected"
+            return String(data: output, encoding: .utf8) ?? ""
         }.value
     }
 
