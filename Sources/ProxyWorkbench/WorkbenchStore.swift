@@ -183,7 +183,7 @@ struct SurgeAppSnapshot: Hashable, Sendable {
     }
 
     var hasConnectedNetworkTunnel: Bool {
-        networkTunnelStatus.localizedCaseInsensitiveContains("appears connected")
+        networkTunnelStatus.localizedCaseInsensitiveContains("is connected")
     }
 }
 
@@ -1270,11 +1270,15 @@ final class WorkbenchStore: ObservableObject {
             statusText = "Startup watchdog could not stop Blaze VPN; leaving app open for manual recovery"
             return
         }
-        _ = await restoreSurgeAfterBlazeIfSafe(stepID: 8)
+        let restored = await restoreSurgeAfterBlazeIfSafe(stepID: 8)
         await refreshSurgeStatus(updateStatusText: false)
-        await writeStartupWatchdogRecord(reason: reason, phase: "restored")
-        startupWatchdogText = "Recovered at \(Date().formatted(date: .omitted, time: .standard))"
-        statusText = "Startup watchdog recovered network state; Blaze VPN stopped and Surge restore attempted"
+        await writeStartupWatchdogRecord(reason: reason, phase: restored ? "restored" : "restore-failed")
+        startupWatchdogText = restored
+            ? "Recovered at \(Date().formatted(date: .omitted, time: .standard))"
+            : "Recovery incomplete at \(Date().formatted(date: .omitted, time: .standard))"
+        statusText = restored
+            ? "Startup watchdog recovered network state; Blaze VPN stopped and Surge restore attempted"
+            : "Startup watchdog stopped Blaze VPN, but Surge did not return to its previous VPN state"
         scheduleTerminationAfterWatchdogRecovery()
     }
 
@@ -2084,10 +2088,21 @@ final class WorkbenchStore: ObservableObject {
         guard !surgeLines.isEmpty else {
             return "No Surge VPN service listed"
         }
-        if surgeLines.contains(where: { $0.localizedCaseInsensitiveContains("Connected") }) {
-            return "Surge VPN service appears connected"
+        if surgeLines.contains(where: { vpnServiceState(in: $0) == "Connected" }) {
+            return "Surge VPN service is connected"
         }
         return "Surge VPN service listed but not connected"
+    }
+
+    private nonisolated static func vpnServiceState(in line: String) -> String? {
+        guard let open = line.firstIndex(of: "("),
+              let close = line[open...].firstIndex(of: ")"),
+              open < close
+        else {
+            return nil
+        }
+        return String(line[line.index(after: open)..<close])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private nonisolated static func startSurgeVPNServiceIfAvailable() async throws {
