@@ -2732,27 +2732,37 @@ final class WorkbenchStore: ObservableObject {
         let httpPort = proxyListenPort
         let socksPort = socksListenPort
 
-        for target in targets {
-            async let httpFetch = ConnectivityCurlFetchProbe.fetch(
-                target: target,
-                transport: "HTTP Fetch",
-                proxy: .http(port: httpPort)
-            )
-            async let httpConnect = ConnectivitySocketProbe.httpConnect(
-                target: target,
-                proxyPort: httpPort
-            )
-            async let socksConnect = ConnectivitySocketProbe.socks5Connect(
-                target: target,
-                proxyPort: socksPort
-            )
-            async let socksFetch = ConnectivityCurlFetchProbe.fetch(
-                target: target,
-                transport: "SOCKS5 Fetch",
-                proxy: .socks5(port: socksPort)
-            )
+        await withTaskGroup(of: ConnectivityTestResult.self) { group in
+            for target in targets {
+                group.addTask {
+                    await ConnectivityCurlFetchProbe.fetch(
+                        target: target,
+                        transport: "HTTP Fetch",
+                        proxy: .http(port: httpPort)
+                    )
+                }
+                group.addTask {
+                    await ConnectivitySocketProbe.httpConnect(
+                        target: target,
+                        proxyPort: httpPort
+                    )
+                }
+                group.addTask {
+                    await ConnectivitySocketProbe.socks5Connect(
+                        target: target,
+                        proxyPort: socksPort
+                    )
+                }
+                group.addTask {
+                    await ConnectivityCurlFetchProbe.fetch(
+                        target: target,
+                        transport: "SOCKS5 Fetch",
+                        proxy: .socks5(port: socksPort)
+                    )
+                }
+            }
 
-            for result in await [httpFetch, httpConnect, socksConnect, socksFetch] {
+            for await result in group {
                 await appendConnectivityResult(result)
             }
         }
@@ -2990,8 +3000,8 @@ private enum ConnectivityCurlFetchProbe {
                 "--show-error",
                 "--output", "/dev/null",
                 "--write-out", "%{http_code}",
-                "--connect-timeout", "8",
-                "--max-time", "18",
+                "--connect-timeout", "20",
+                "--max-time", "35",
                 "--http1.1",
                 "--user-agent", "blaze-connectivity-test",
                 "--header", "Accept: */*"
