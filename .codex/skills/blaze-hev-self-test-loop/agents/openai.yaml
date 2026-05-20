@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blaze HEV Self-Test Loop"
+  short_description: "Blaze HEV guarded test loop"
+  default_prompt: "Use $blaze-hev-self-test-loop to continue the guarded Blaze HEV build, notarization, install, watchdog, and diagnostic repair loop."
