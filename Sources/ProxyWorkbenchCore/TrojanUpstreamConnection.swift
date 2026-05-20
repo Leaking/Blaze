@@ -45,13 +45,13 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         tcpOptions.noDelay = true
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         parameters.preferNoProxies = true
-        if let preferredInterfaceType = await PhysicalInterfacePreference.shared.current() {
-            parameters.requiredInterfaceType = preferredInterfaceType
+        if let preferredInterface = await PhysicalInterfacePreference.shared.current() {
+            parameters.requiredInterface = preferredInterface.interface
         }
-        // Block loopback so the dial can never recurse through a local listener.
-        // preferNoProxies is only a hint; binding to a physical interface keeps
-        // upstream dials out of other active Network Extension tunnels.
-        parameters.prohibitedInterfaceTypes = [.loopback]
+        // preferNoProxies is only a hint. Pin upstream dials to a concrete
+        // physical interface and exclude virtual/loopback interfaces so global
+        // Packet Tunnel routing cannot recurse through Blaze itself.
+        parameters.prohibitedInterfaceTypes = [.loopback, .other]
         parameters.allowFastOpen = false
         let queue = DispatchQueue(label: "blaze.Trojan.\(UUID().uuidString)")
         let resolvedHost = try await UpstreamEndpointResolver.connectionHost(for: upstream.host)
@@ -287,42 +287,46 @@ private struct ResolvedUpstreamHost: Sendable {
 private actor PhysicalInterfacePreference {
     static let shared = PhysicalInterfacePreference()
 
-    private var cachedType: NWInterface.InterfaceType?
+    struct Preference: Sendable {
+        var interface: NWInterface
+    }
+
+    private var cachedPreference: Preference?
     private var lastCheck = Date.distantPast
 
-    func current() async -> NWInterface.InterfaceType? {
+    func current() async -> Preference? {
         if Date().timeIntervalSince(lastCheck) < 30 {
-            return cachedType
+            return cachedPreference
         }
 
         for type in [NWInterface.InterfaceType.wifi, .wiredEthernet] {
-            if await isSatisfied(type) {
-                cachedType = type
+            if let interface = await satisfiedInterface(type) {
+                cachedPreference = Preference(interface: interface)
                 lastCheck = Date()
-                return type
+                return cachedPreference
             }
         }
 
-        cachedType = nil
+        cachedPreference = nil
         lastCheck = Date()
         return nil
     }
 
-    private func isSatisfied(_ type: NWInterface.InterfaceType) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+    private func satisfiedInterface(_ type: NWInterface.InterfaceType) async -> NWInterface? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<NWInterface?, Never>) in
             let queue = DispatchQueue(label: "blaze.PhysicalInterfacePreference.\(type)")
             let monitor = NWPathMonitor(requiredInterfaceType: type)
             let result = PathMonitorResult(continuation: continuation, monitor: monitor)
 
             monitor.pathUpdateHandler = { path in
                 if path.status == .satisfied {
-                    result.finish(true)
+                    result.finish(path.availableInterfaces.first { $0.type == type })
                 }
             }
 
             monitor.start(queue: queue)
             queue.asyncAfter(deadline: .now() + .milliseconds(250)) {
-                result.finish(false)
+                result.finish(nil)
             }
         }
     }
@@ -330,16 +334,16 @@ private actor PhysicalInterfacePreference {
 
 private final class PathMonitorResult: @unchecked Sendable {
     private let lock = NSLock()
-    private let continuation: CheckedContinuation<Bool, Never>
+    private let continuation: CheckedContinuation<NWInterface?, Never>
     private let monitor: NWPathMonitor
     private var didResume = false
 
-    init(continuation: CheckedContinuation<Bool, Never>, monitor: NWPathMonitor) {
+    init(continuation: CheckedContinuation<NWInterface?, Never>, monitor: NWPathMonitor) {
         self.continuation = continuation
         self.monitor = monitor
     }
 
-    func finish(_ result: Bool) {
+    func finish(_ result: NWInterface?) {
         lock.lock()
         guard !didResume else {
             lock.unlock()
@@ -535,10 +539,10 @@ enum DNSOverHTTPSJSONResolver {
         tcpOptions.noDelay = true
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         parameters.preferNoProxies = true
-        if let preferredInterfaceType = await PhysicalInterfacePreference.shared.current() {
-            parameters.requiredInterfaceType = preferredInterfaceType
+        if let preferredInterface = await PhysicalInterfacePreference.shared.current() {
+            parameters.requiredInterface = preferredInterface.interface
         }
-        parameters.prohibitedInterfaceTypes = [.loopback]
+        parameters.prohibitedInterfaceTypes = [.loopback, .other]
         parameters.allowFastOpen = false
 
         guard let port = NWEndpoint.Port(rawValue: 443) else {
