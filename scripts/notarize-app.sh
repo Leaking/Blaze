@@ -8,6 +8,7 @@ ZIP_PATH="${BLAZE_NOTARY_ZIP:-$ROOT_DIR/build/blaze-notary.zip}"
 MAX_WAIT_SECONDS="${BLAZE_NOTARY_MAX_WAIT_SECONDS:-600}"
 POLL_INTERVAL_SECONDS="${BLAZE_NOTARY_POLL_INTERVAL_SECONDS:-30}"
 MAX_ATTEMPTS="${BLAZE_NOTARY_MAX_ATTEMPTS:-3}"
+SUBMIT_ONLY="${BLAZE_NOTARY_SUBMIT_ONLY:-0}"
 
 json_value() {
     local key="$1"
@@ -44,6 +45,11 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
         exit 1
     fi
     echo "Notarization submission id: $submission_id"
+
+    if [[ "$SUBMIT_ONLY" == "1" || "$SUBMIT_ONLY" == "true" ]]; then
+        echo "Notarization submitted without waiting: $submission_id"
+        exit 0
+    fi
 
     elapsed=0
     while ((elapsed < MAX_WAIT_SECONDS)); do

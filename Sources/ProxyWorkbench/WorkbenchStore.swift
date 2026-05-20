@@ -209,11 +209,65 @@ struct SystemExtensionInstallSnapshot: Hashable, Sendable {
         return "app \(hostVersion)/\(hostBuild), bundled \(bundledVersion)/\(bundledBuild), active \(active)"
     }
 
+    var hostText: String {
+        "\(hostVersion)/\(hostBuild)"
+    }
+
+    var bundledText: String {
+        "\(bundledVersion)/\(bundledBuild)"
+    }
+
+    var activeText: String {
+        activeVersion.map { "\($0)/\(activeBuild ?? "?")" } ?? "not active"
+    }
+
     var detail: String {
         if isActiveLatest {
             return "Active system extension matches bundled build \(bundledVersion)/\(bundledBuild)"
         }
         return "Active system extension does not match bundled build; \(summary); \(statusLine)"
+    }
+}
+
+struct AppTrustSnapshot: Hashable, Sendable {
+    var hostVersion: String
+    var hostBuild: String
+    var accepted: Bool
+    var exitCode: Int32
+    var statusLine: String
+    var sourceLine: String?
+    var originLine: String?
+
+    var summary: String {
+        let state = accepted ? "accepted" : "rejected"
+        return "app \(hostVersion)/\(hostBuild), \(state), \(sourceLine ?? "source unknown")"
+    }
+
+    var detail: String {
+        [
+            statusLine,
+            sourceLine,
+            originLine,
+            accepted ? nil : "spctl exit \(exitCode)"
+        ]
+        .compactMap { value -> String? in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        .joined(separator: "; ")
+    }
+}
+
+private struct CommandOutputResult: Sendable {
+    var exitCode: Int32
+    var output: String
+    var errorOutput: String
+
+    var combinedText: String {
+        [output, errorOutput]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 }
 
@@ -273,6 +327,8 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var packetTunnelLastDiagnosticsRefreshText = "Never"
     @Published private(set) var systemExtensionInstallSnapshot: SystemExtensionInstallSnapshot?
     @Published private(set) var systemExtensionInstallText = "Not checked"
+    @Published private(set) var appTrustSnapshot: AppTrustSnapshot?
+    @Published private(set) var appTrustText = "Not checked"
 
     private let probe = LatencyProbe()
     private let systemExtensionController = SystemExtensionController()
@@ -1050,6 +1106,15 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    private func refreshAppTrustStatus(updateStatusText: Bool) async {
+        let snapshot = await Self.appTrustSnapshot()
+        appTrustSnapshot = snapshot
+        appTrustText = snapshot.summary
+        if updateStatusText {
+            statusText = snapshot.detail
+        }
+    }
+
     private func prepareSurgeForBlaze() async -> Bool {
         var prepared = true
 
@@ -1166,6 +1231,7 @@ final class WorkbenchStore: ObservableObject {
         guard !startupWorkflowRunning else { return }
         await refreshSurgeStatus(updateStatusText: false)
         await refreshSystemProxyStatus(updateStatusText: false)
+        await refreshAppTrustStatus(updateStatusText: false)
         await refreshSystemExtensionInstallStatus(updateStatusText: false)
         await refreshPacketTunnelStatus(updateStatusText: false)
         updateStartupWorkflowFromCurrentState()
@@ -1296,12 +1362,16 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private func writeStartupWatchdogRecord(reason: String, phase: String) async {
+        await refreshAppTrustStatus(updateStatusText: false)
+        await refreshSystemExtensionInstallStatus(updateStatusText: false)
         let url = Self.startupWatchdogRecordURL()
         let lines = [
             "timestamp=\(ISO8601DateFormatter().string(from: Date()))",
             "phase=\(phase)",
             "reason=\(reason)",
             "watchdog=\(startupWatchdogText)",
+            "appTrust=\(appTrustSnapshot?.detail ?? appTrustText)",
+            "systemExtension=\(systemExtensionInstallSnapshot?.detail ?? systemExtensionInstallText)",
             "packetTunnel=\(packetTunnelStatusText)",
             "packetTunnelConfig=\(packetTunnelConfigurationText)",
             "packetTunnelDiagnostics=\(packetTunnelDiagnosticsText)",
@@ -1371,11 +1441,21 @@ final class WorkbenchStore: ObservableObject {
                 status: .running,
                 detail: "Checking host entitlement and requesting extension activation"
             )
+            await refreshAppTrustStatus(updateStatusText: false)
+            if let trust = appTrustSnapshot, !trust.accepted {
+                setStartupStep(
+                    stepID,
+                    status: .failed,
+                    detail: "App trust check rejected the installed bundle: \(trust.detail)"
+                )
+                return false
+            }
+
             guard SystemExtensionController.hostHasInstallEntitlement() else {
                 setStartupStep(
                     stepID,
                     status: .failed,
-                    detail: "Host app signature is missing \(SystemExtensionController.requiredHostEntitlement)"
+                    detail: "Host app signature is missing \(SystemExtensionController.requiredHostEntitlement); \(appTrustSnapshot?.detail ?? appTrustText)"
                 )
                 return false
             }
@@ -1386,15 +1466,15 @@ final class WorkbenchStore: ObservableObject {
                 await refreshSystemExtensionInstallStatus(updateStatusText: false)
                 let status = packetTunnelStatusText
                 if status.localizedCaseInsensitiveContains("failed") || status.localizedCaseInsensitiveContains("missing") {
-                    setStartupStep(stepID, status: .failed, detail: status)
+                    setStartupStep(stepID, status: .failed, detail: "\(status); \(appTrustSnapshot?.detail ?? appTrustText)")
                     return false
                 }
                 if status.localizedCaseInsensitiveContains("approval") {
-                    setStartupStep(stepID, status: .actionNeeded, detail: status)
+                    setStartupStep(stepID, status: .actionNeeded, detail: "\(status); \(systemExtensionInstallSnapshot?.detail ?? systemExtensionInstallText)")
                     return true
                 }
                 if let snapshot = systemExtensionInstallSnapshot, snapshot.isActiveLatest {
-                    setStartupStep(stepID, status: .passed, detail: "\(status); \(snapshot.detail)")
+                    setStartupStep(stepID, status: .passed, detail: "\(status); \(snapshot.detail); \(appTrustSnapshot?.summary ?? appTrustText)")
                     return true
                 }
             }
@@ -1407,7 +1487,10 @@ final class WorkbenchStore: ObservableObject {
             setStartupStep(
                 stepID,
                 status: .failed,
-                detail: systemExtensionInstallSnapshot?.detail ?? "System extension did not become active latest"
+                detail: [
+                    systemExtensionInstallSnapshot?.detail ?? "System extension did not become active latest",
+                    appTrustSnapshot?.detail ?? appTrustText
+                ].joined(separator: "; ")
             )
             return false
 
@@ -1542,11 +1625,12 @@ final class WorkbenchStore: ObservableObject {
         setStartupStep(1, status: surgeStatus, detail: surgeDetail, target: surgeAppSnapshot.summary)
 
         let extensionLatest = systemExtensionInstallSnapshot?.isActiveLatest ?? false
-        let extensionStatus: StartupWorkflowStepStatus = SystemExtensionController.hostHasInstallEntitlement() && extensionLatest ? .passed : .failed
+        let appTrustAccepted = appTrustSnapshot?.accepted ?? false
+        let extensionStatus: StartupWorkflowStepStatus = SystemExtensionController.hostHasInstallEntitlement() && extensionLatest && appTrustAccepted ? .passed : .failed
         setStartupStep(
             2,
             status: extensionStatus,
-            detail: "\(SystemExtensionController.hostEntitlementStatusText); \(systemExtensionInstallSnapshot?.detail ?? systemExtensionInstallText)"
+            detail: "\(SystemExtensionController.hostEntitlementStatusText); \(systemExtensionInstallSnapshot?.detail ?? systemExtensionInstallText); \(appTrustSnapshot?.detail ?? appTrustText)"
         )
 
         let listenerStatus: StartupWorkflowStepStatus
@@ -2018,6 +2102,34 @@ final class WorkbenchStore: ObservableObject {
         )
     }
 
+    private nonisolated static func appTrustSnapshot() async -> AppTrustSnapshot {
+        let host = bundleVersionInfo(at: Bundle.main.bundleURL)
+        let result = await commandOutputResult(
+            executablePath: "/usr/sbin/spctl",
+            arguments: [
+                "--assess",
+                "--type",
+                "execute",
+                "--verbose=4",
+                Bundle.main.bundleURL.path
+            ]
+        )
+        let lines = result.combinedText
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let statusLine = lines.first ?? "spctl produced no output"
+        return AppTrustSnapshot(
+            hostVersion: host.version,
+            hostBuild: host.build,
+            accepted: result.exitCode == 0,
+            exitCode: result.exitCode,
+            statusLine: statusLine,
+            sourceLine: lines.first { $0.hasPrefix("source=") },
+            originLine: lines.first { $0.hasPrefix("origin=") }
+        )
+    }
+
     private nonisolated static func bundledSystemExtensionURL() -> URL {
         Bundle.main.bundleURL
             .appendingPathComponent("Contents", isDirectory: true)
@@ -2060,6 +2172,37 @@ final class WorkbenchStore: ObservableObject {
         let pair = line[line.index(after: open)..<close].split(separator: "/", maxSplits: 1).map(String.init)
         guard pair.count == 2 else { return nil }
         return (pair[0], pair[1])
+    }
+
+    private nonisolated static func commandOutputResult(executablePath: String, arguments: [String]) async -> CommandOutputResult {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = arguments
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                return CommandOutputResult(
+                    exitCode: process.terminationStatus,
+                    output: String(data: output, encoding: .utf8) ?? "",
+                    errorOutput: String(data: errorOutput, encoding: .utf8) ?? ""
+                )
+            } catch {
+                return CommandOutputResult(
+                    exitCode: -1,
+                    output: "",
+                    errorOutput: "\(executablePath) failed to run: \(error)"
+                )
+            }
+        }.value
     }
 
     private nonisolated static func systemExtensionsListOutput() async throws -> String {
