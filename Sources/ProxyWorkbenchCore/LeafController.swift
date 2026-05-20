@@ -212,6 +212,8 @@ public actor LeafController {
     private var lastConfiguration: LeafConfiguration?
     private var lastConfigPath: URL?
     private var lastLogPath: URL?
+    private var healthProbeTask: Task<Void, Never>?
+    private var consecutiveProbeFailures = 0
     /// True when the owner asked us to stop. Distinguishes "intentional shutdown"
     /// from "crashed / killed externally" so the supervisor knows whether to
     /// restart.
@@ -313,6 +315,8 @@ public actor LeafController {
         stopRequested = true
         generation &+= 1   // invalidate any in-flight watcher's expectations
         consecutiveFailures = 0
+        healthProbeTask?.cancel()
+        healthProbeTask = nil
         if let running = process, running.isRunning {
             await internalStopProcess(running)
         }
@@ -381,6 +385,7 @@ public actor LeafController {
         }
         leafLogger.notice("leaf started pid=\(pid, privacy: .public) attempt=\(attempt, privacy: .public) config=\(configURL.path, privacy: .public)")
         await lifecycleHandler?(.started(pid: pid))
+        startHealthProbe(socksPort: configuration.socksPort, generation: currentGeneration)
 
         // Detach a watcher that waits for process exit, then reports back to
         // the actor. The watcher captures `currentGeneration`; the actor's
@@ -396,6 +401,64 @@ public actor LeafController {
                 configuration: configuration
             )
         }
+    }
+
+    private func startHealthProbe(socksPort: Int, generation observed: UInt64) {
+        healthProbeTask?.cancel()
+        consecutiveProbeFailures = 0
+        healthProbeTask = Task { [weak self] in
+            // First probe after 5s of warmup; thereafter every 15s.
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            while !Task.isCancelled {
+                guard let self else { return }
+                let stillCurrent = await self.probeListenerHealth(socksPort: socksPort, generation: observed)
+                if !stillCurrent { return }
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
+    }
+
+    /// Attempt a TCP connect to the local SOCKS5 port. Returns false if the
+    /// supervisor's generation has advanced past `observed` (a newer launch
+    /// took over) so the caller knows to stop probing. The probe uses a 2s
+    /// SO_RCVTIMEO/SO_SNDTIMEO; two consecutive failures terminate the
+    /// process so the supervisor restarts it from scratch.
+    private func probeListenerHealth(socksPort: Int, generation observed: UInt64) async -> Bool {
+        guard observed == generation else { return false }
+        guard let process, process.isRunning else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(socksPort).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sptr in
+                connect(fd, sptr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if result == 0 {
+            if consecutiveProbeFailures > 0 {
+                leafLogger.notice("leaf health probe recovered on port=\(socksPort, privacy: .public)")
+            }
+            consecutiveProbeFailures = 0
+            return true
+        }
+        consecutiveProbeFailures += 1
+        leafLogger.notice("leaf health probe failed port=\(socksPort, privacy: .public) errno=\(errno, privacy: .public) consecutive=\(self.consecutiveProbeFailures, privacy: .public)")
+        if consecutiveProbeFailures >= 2 {
+            leafLogger.notice("leaf unresponsive after \(self.consecutiveProbeFailures, privacy: .public) probes; SIGTERM to trigger supervisor restart")
+            consecutiveProbeFailures = 0
+            // SIGTERM the process. handleExit will respawn via the supervisor.
+            process.terminate()
+            return false
+        }
+        return true
     }
 
     private func handleExit(generation observed: UInt64, status: Int32, configuration: LeafConfiguration) async {
