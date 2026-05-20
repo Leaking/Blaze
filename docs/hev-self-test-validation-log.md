@@ -149,7 +149,29 @@ Record every self-test cycle here before and after validation. Include the build
   4. Manually `curl --socks5 127.0.0.1:19081 https://www.google.com` while blaze is running and Step 7 is not — if it succeeds quickly, the server is fine and only the probe-burst path is broken. If it also takes 30+s, the listener itself is slow.
 - Next decision: pause unattended loop here. Next session should be interactive: rebuild as Build 52 with handleClient timing + `.notice` logger, and run with manual single-connection probes for direct comparison. Watchdog discipline is now proven (3 consecutive disruptive cycles, Surge cleanly restored each time, network never permanently lost).
 
-## Loop infrastructure delivered in this session (Builds 47→51)
+## 2026-05-21 02:42 Asia/Shanghai - Build 55 (Rust leaf integration)
+
+- Commit: pending after this entry
+- Notarization: id `(see notarize-55.log)`, Accepted, stapled.
+- Triggering evidence: Builds 49-54 plus a research pass confirmed the Swift cooperative concurrency pool starves under concurrent blocking I/O; build 52/53/54 dispatcher experiments did not unblock Step 7. The research agent's report identified `eycorsican/leaf` (Rust, Tokio, Apache-2.0, Trojan first-class) as the lowest-risk path that delivers the protocol stack we'd otherwise own.
+- Hypothesis: a Tokio-backed proxy with native trojan, TLS, and socks5/http inbounds will serve 12 concurrent probes without the pool starvation that Swift cannot escape. Smoke test before build 55 confirmed this: 12 simultaneous probes (3 hosts × 4 transports) through `leaf -c <conf> -b en1` against the same Trojan upstream Blaze's Step 7 was failing on returned 9× HTTP 200 in 0.5-1.7s + 3× HTTP 403 (Cloudflare geo-block from HK, not a leaf issue), zero timeouts.
+- Fix/change:
+  1. Vendored `eycorsican/leaf@7a9101b5` (Apache-2.0) under `Vendor/Leaf/leaf/`; built `leaf-cli` as a 9.5 MB arm64 mach-O at `Vendor/Leaf/macos-arm64/leaf` via `cargo build -p leaf-cli --release`.
+  2. New `Sources/ProxyWorkbenchCore/LeafController.swift` actor that materialises a `LeafConfiguration` into leaf's `.conf` syntax, launches the binary as a subprocess, and exposes start/stop/lifecycle. Captures stdout+stderr to `~/Library/Application Support/blaze/leaf/leaf.log`.
+  3. `WorkbenchStore` adds `buildLeafConfiguration()` (maps `profile.proxies` + `globalProxyPolicy` + `selectedPolicies` to leaf's `[Proxy]`/`[Rule]` sections, with full coverage for trojan/shadowsocks/socks5 nodes and DIRECT/REJECT/FINAL). `startLocalProxyServer` / `startLocalSocksServer` now delegate to `ensureLeafRunning`; the same applies to the stop path. The Swift listener classes remain in the tree but are no longer instantiated.
+  4. `scripts/build-app.sh` copies the leaf binary into `Contents/Resources/leaf` and signs it with the same Developer ID identity, hardened runtime, and timestamp as the rest of the executable surface. Refuses to build without the binary unless `BLAZE_ALLOW_MISSING_LEAF=1`.
+  5. Recovery path stops leaf alongside the packet tunnel so a clean port surface is left for Surge to retake.
+- External references: `eycorsican/leaf` README + `leaf/src/config/conf/config.rs` for `.conf` syntax; research agent's report comparing sing-box / mihomo / Xray-core / shadowsocks-rust / leaf / SwiftNIO.
+- Validation commands: `swift test` (99 passed); 12-probe stress test against `leaf -b en1` (all returned non-timeout responses); `BLAZE_BUILD_NUMBER=55 ./scripts/build-app.sh`; notarize+staple; install; guarded startup workflow.
+- Startup workflow result: **Steps 1–7 all PASSED**. `Step 7 Passed: 25 checks completed [Diagnostics 25/25]` at 2026-05-20T18:42:37Z, 26s after Step 7 started, zero blocking failures, zero critical proxy failures. Step 8 reported `Action Needed: Blaze VPN is still connected; not restarting Surge to avoid DNS/utun takeover` — the workflow correctly refuses to silently kill an active tunnel.
+- Watchdog result: external 5-min watchdog fired (workflow doesn't auto-quit on success), recovery cleanly restored Surge.
+- Surge restore: passed via watchdog recovery; `scutil --nc list` shows Surge connected, Blaze disconnected.
+- App/ext version check: app 0.1.0/55, sysext 0.1.0/55, `spctl: accepted, source=Notarized Developer ID`, leaf 9.5 MB at `Contents/Resources/leaf` signed.
+- Concurrent traffic during Step 7 (from real apps, captured in leaf's log): api.telegram.org connect=86ms, browser-intake-us5-datadoghq.com connect=77ms, api.apple-cloudkit.com connect=33ms — leaf services real traffic and probes simultaneously with no starvation.
+- Remaining risk: leaf does not have Blaze's per-connection event logging hooked up; `proxy-events.log` still receives STARTUP entries but not per-connection SOCKS5/HTTP entries (those used to come from the Swift LocalSOCKS5ProxyServer). Need a follow-up to either parse leaf's log or add an inbound observer.
+- Next decision: delete `LocalSOCKS5ProxyServer.swift`, `LocalHTTPProxyServer.swift`, `TrojanUpstreamConnection.swift`, `RuleEngine.swift` once the leaf path is exercised for a few more days and proxy-events.log parity is closed. Build 55 establishes the architecture is correct.
+
+## Loop infrastructure delivered in this session (Builds 47→55)
 
 - End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
 - `setStartupStep` writes a `STARTUP` event for every status transition (including running→running detail changes after the latest tweak) → `proxy-events.log` now contains a complete timeline per workflow run.

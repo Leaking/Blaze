@@ -1354,6 +1354,10 @@ final class WorkbenchStore: ObservableObject {
         )
 
         await stopPacketTunnel()
+        // The Swift listeners are no longer used, but leaf still owns the
+        // SOCKS5/HTTP ports for the duration of the session. Tear it down
+        // so we leave a clean port surface for Surge to retake.
+        await ensureLeafStopped(reason: "Watchdog recovery")
         if !proxyServerRunning && !socksServerRunning {
             statusText = "Blaze listeners were already stopped"
         }
