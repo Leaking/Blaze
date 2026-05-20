@@ -19,6 +19,7 @@ TUNNEL_CONTENTS_DIR="$TUNNEL_EXTENSION_DIR/Contents"
 TUNNEL_MACOS_DIR="$TUNNEL_CONTENTS_DIR/MacOS"
 TUNNEL_FRAMEWORKS_DIR="$TUNNEL_CONTENTS_DIR/Frameworks"
 HEV_LIBRARY_DIR="${BLAZE_HEV_LIBRARY_DIR:-$ROOT_DIR/Vendor/HevSocks5Tunnel/macos-arm64}"
+LEAF_BINARY="${BLAZE_LEAF_BINARY:-$ROOT_DIR/Vendor/Leaf/macos-arm64/leaf}"
 SIGN_IDENTITY="${BLAZE_SIGN_IDENTITY:-}"
 ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS="${BLAZE_ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS:-0}"
 APP_PROVISIONING_PROFILE="${BLAZE_APP_PROVISIONING_PROFILE:-}"
@@ -224,6 +225,20 @@ else
     cp "${HEV_DYLIBS[@]}" "$TUNNEL_FRAMEWORKS_DIR"/
 fi
 
+if [[ ! -f "$LEAF_BINARY" ]]; then
+    if [[ "${BLAZE_ALLOW_MISSING_LEAF:-0}" == "1" ]]; then
+        echo "WARNING: leaf binary not found at $LEAF_BINARY; host app will have no proxy listener." >&2
+    else
+        echo "ERROR: leaf binary not found at $LEAF_BINARY." >&2
+        echo "       Build it with: (cd Vendor/Leaf/leaf && cargo build -p leaf-cli --release) && cp Vendor/Leaf/leaf/target/release/leaf $LEAF_BINARY" >&2
+        echo "       To intentionally build a non-functional bundle, set BLAZE_ALLOW_MISSING_LEAF=1." >&2
+        exit 1
+    fi
+else
+    cp "$LEAF_BINARY" "$RESOURCES_DIR/leaf"
+    chmod +x "$RESOURCES_DIR/leaf"
+fi
+
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string blaze" "$CONTENTS_DIR/Info.plist"
@@ -293,6 +308,10 @@ if [[ "$ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS" == "1" ]]; then
         done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
     fi
 
+    if [[ -f "$RESOURCES_DIR/leaf" ]]; then
+        codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" "$RESOURCES_DIR/leaf" >/dev/null
+    fi
+
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_TUNNEL_ENTITLEMENTS" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_APP_ENTITLEMENTS" "$APP_DIR" >/dev/null
 else
@@ -300,6 +319,10 @@ else
         while IFS= read -r dylib; do
             codesign --force --sign "$SIGN_IDENTITY" "$dylib" >/dev/null
         done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
+    fi
+
+    if [[ -f "$RESOURCES_DIR/leaf" ]]; then
+        codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES_DIR/leaf" >/dev/null
     fi
 
     codesign --force --sign "$SIGN_IDENTITY" "$TUNNEL_EXTENSION_DIR" >/dev/null

@@ -336,6 +336,27 @@ final class WorkbenchStore: ObservableObject {
     private var proxyLogStore = ProxyEventStore(diskLogURL: ProxyEventStore.defaultDiskLogURL())
     private var proxyServer: LocalHTTPProxyServer?
     private var socksServer: LocalSOCKS5ProxyServer?
+    private let leafController = LeafController(
+        binaryURL: WorkbenchStore.embeddedLeafBinaryURL(),
+        runtimeDir: WorkbenchStore.leafRuntimeDir()
+    )
+
+    private static func embeddedLeafBinaryURL() -> URL {
+        if let url = Bundle.main.url(forResource: "leaf", withExtension: nil) {
+            return url
+        }
+        // Fallback for dev runs (swift run blaze) — pick the Vendor binary
+        // built locally so the workflow still works outside the bundle.
+        let cwd = FileManager.default.currentDirectoryPath
+        return URL(fileURLWithPath: cwd)
+            .appendingPathComponent("Vendor/Leaf/macos-arm64/leaf")
+    }
+
+    private static func leafRuntimeDir() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return appSupport.appendingPathComponent("blaze/leaf", isDirectory: true)
+    }
     private var proxyRefreshTask: Task<Void, Never>?
     private var startupWatchdogTask: Task<Void, Never>?
     private var startupWatchdogDeadline: Date?
@@ -2859,62 +2880,178 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    // Both startLocalProxyServer / startLocalSocksServer now delegate to leaf,
+    // which serves HTTP and SOCKS5 in one process. The Swift LocalHTTPProxyServer
+    // and LocalSOCKS5ProxyServer are retained as dependencies but no longer
+    // instantiated — they will be removed once all callers migrate.
     func startLocalProxyServer() async {
-        guard !proxyServerRunning else { return }
-        saveLocalState()
-        let logStore = proxyLogStore
-        let server = LocalHTTPProxyServer(logStore: logStore, routingProfile: activeRoutingProfile(), groupSelections: selectedPolicies)
-
-        do {
-            try await server.start(port: proxyListenPort)
-            proxyServer = server
-            proxyServerRunning = true
-            statusText = "HTTP proxy listening on 127.0.0.1:\(proxyListenPort)"
-            startProxyEventRefresh()
-        } catch {
-            statusText = "Proxy start failed: \(error)"
-        }
+        await ensureLeafRunning()
     }
 
     func stopLocalProxyServer() async {
-        await proxyServer?.stop()
-        proxyServer = nil
-        proxyServerRunning = false
-        await refreshProxyEvents()
-        statusText = "HTTP proxy stopped"
-        if !socksServerRunning {
-            proxyRefreshTask?.cancel()
-            proxyRefreshTask = nil
-        }
+        await ensureLeafStopped(reason: "HTTP proxy stop requested")
     }
 
     func startLocalSocksServer() async {
-        guard !socksServerRunning else { return }
-        saveLocalState()
-        let logStore = proxyLogStore
-        let server = LocalSOCKS5ProxyServer(logStore: logStore, routingProfile: activeRoutingProfile(), groupSelections: selectedPolicies)
-
-        do {
-            try await server.start(port: socksListenPort)
-            socksServer = server
-            socksServerRunning = true
-            statusText = "SOCKS5 proxy listening on 127.0.0.1:\(socksListenPort)"
-            startProxyEventRefresh()
-        } catch {
-            statusText = "SOCKS5 start failed: \(error)"
-        }
+        await ensureLeafRunning()
     }
 
     func stopLocalSocksServer() async {
-        await socksServer?.stop()
-        socksServer = nil
-        socksServerRunning = false
-        await refreshProxyEvents()
-        statusText = "SOCKS5 proxy stopped"
-        if !proxyServerRunning {
-            proxyRefreshTask?.cancel()
-            proxyRefreshTask = nil
+        await ensureLeafStopped(reason: "SOCKS5 proxy stop requested")
+    }
+
+    private func ensureLeafRunning() async {
+        let configuration = buildLeafConfiguration()
+        let alreadyRunning = await leafController.isRunning
+        if alreadyRunning, let current = await leafController.configuration, current == configuration {
+            // Nothing to do; leaf is already serving the requested config.
+            if !proxyServerRunning { proxyServerRunning = true }
+            if !socksServerRunning { socksServerRunning = true }
+            return
         }
+        saveLocalState()
+        if alreadyRunning {
+            await leafController.stop()
+        }
+        do {
+            try await leafController.start(with: configuration)
+            proxyServerRunning = true
+            socksServerRunning = true
+            statusText = "Leaf proxy listening on 127.0.0.1:\(proxyListenPort)/\(socksListenPort) (final=\(configuration.defaultProxy))"
+            startProxyEventRefresh()
+        } catch {
+            proxyServerRunning = false
+            socksServerRunning = false
+            statusText = "Leaf launch failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func ensureLeafStopped(reason: String) async {
+        await leafController.stop()
+        proxyServerRunning = false
+        socksServerRunning = false
+        proxyServer = nil
+        socksServer = nil
+        await refreshProxyEvents()
+        statusText = "Leaf proxy stopped (\(reason))"
+        proxyRefreshTask?.cancel()
+        proxyRefreshTask = nil
+    }
+
+    private func buildLeafConfiguration() -> LeafConfiguration {
+        var proxies: [LeafConfiguration.Proxy] = [
+            .init(tag: "DIRECT", protocolName: "direct"),
+            .init(tag: "REJECT", protocolName: "drop")
+        ]
+        var seenTags: Set<String> = ["DIRECT", "REJECT"]
+        for node in profile.proxies {
+            guard !seenTags.contains(node.name) else { continue }
+            guard let mapped = leafProxy(from: node) else { continue }
+            seenTags.insert(node.name)
+            proxies.append(mapped)
+        }
+
+        let finalPolicy = effectiveLeafFinalPolicy(in: seenTags)
+        let rules: [LeafConfiguration.Rule] = [.final(finalPolicy)]
+
+        return LeafConfiguration(
+            httpPort: proxyListenPort,
+            socksPort: socksListenPort,
+            dnsServers: ["1.1.1.1", "119.29.29.29", "223.5.5.5", "8.8.8.8"],
+            boundInterface: WorkbenchStore.physicalInterfaceName(),
+            logLevel: "info",
+            proxies: proxies,
+            rules: rules,
+            defaultProxy: finalPolicy
+        )
+    }
+
+    private func effectiveLeafFinalPolicy(in availableTags: Set<String>) -> String {
+        // Prefer the user-selected global proxy when it maps to a leaf proxy
+        // we successfully emitted. Otherwise fall back to the first usable
+        // trojan/shadowsocks node we know about, and finally DIRECT.
+        switch proxyRoutingMode {
+        case .direct:
+            return "DIRECT"
+        case .global, .ruleBased:
+            if availableTags.contains(globalProxyPolicy) {
+                return globalProxyPolicy
+            }
+            if let selected = selectedPolicies[globalProxyPolicy],
+               availableTags.contains(selected) {
+                return selected
+            }
+            if let firstNode = profile.proxies.first(where: {
+                ($0.kind == .trojan || $0.kind == .shadowsocks || $0.kind == .socks5)
+                && availableTags.contains($0.name)
+            }) {
+                return firstNode.name
+            }
+            return "DIRECT"
+        }
+    }
+
+    private func leafProxy(from node: ProxyNode) -> LeafConfiguration.Proxy? {
+        let p = node.parameters
+        func bool(_ key: String) -> Bool {
+            guard let value = p[key]?.lowercased() else { return false }
+            return ["1", "true", "yes", "on"].contains(value)
+        }
+        switch node.kind {
+        case .direct:
+            return .init(tag: node.name, protocolName: "direct")
+        case .reject:
+            return .init(tag: node.name, protocolName: "drop")
+        case .trojan:
+            return .init(
+                tag: node.name,
+                protocolName: "trojan",
+                address: node.host,
+                port: node.port,
+                password: node.password,
+                sni: p["sni"] ?? p["server-name"],
+                tlsInsecure: bool("skip-cert-verify") || bool("allow-insecure"),
+                ws: bool("ws"),
+                wsPath: p["ws-path"],
+                wsHost: p["ws-host"]
+            )
+        case .shadowsocks:
+            return .init(
+                tag: node.name,
+                protocolName: "shadowsocks",
+                address: node.host,
+                port: node.port,
+                password: node.password,
+                encryptMethod: p["encrypt-method"] ?? p["method"]
+            )
+        case .socks5:
+            return .init(tag: node.name, protocolName: "socks", address: node.host, port: node.port)
+        default:
+            return nil
+        }
+    }
+
+    private static func physicalInterfaceName() -> String? {
+        // Pick the first up, non-loopback IPv4 interface whose name starts
+        // with "en" (Wi-Fi or wired ethernet). This is what we want leaf to
+        // bind its outbound connections to so it bypasses any utun the
+        // packet tunnel sets up.
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(first) }
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let pointer = current {
+            defer { current = pointer.pointee.ifa_next }
+            guard let address = pointer.pointee.ifa_addr,
+                  Int32(address.pointee.sa_family) == AF_INET else { continue }
+            let flags = pointer.pointee.ifa_flags
+            guard (flags & UInt32(IFF_UP)) != 0,
+                  (flags & UInt32(IFF_RUNNING)) != 0,
+                  (flags & UInt32(IFF_LOOPBACK)) == 0 else { continue }
+            let name = String(cString: pointer.pointee.ifa_name)
+            if name.hasPrefix("en") { return name }
+        }
+        return nil
     }
 
     func refreshProxyEvents() async {
