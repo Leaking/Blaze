@@ -3183,6 +3183,27 @@ private struct ConnectivityTarget: Sendable {
     ]
 }
 
+// Probes do blocking syscalls (recv/send/Process.waitUntilExit) for up to
+// 20-35s. Running those on Swift's cooperative concurrency pool starves the
+// pool: with 12 concurrent probes blocked, every other Task.detached for
+// LocalSOCKS5ProxyServer.handleClient (which also uses blocking I/O) has to
+// wait for a free thread. That manifested as Build 49-51 Step 7 failures
+// where probes timed out at 18s and the same destinations connected
+// successfully 30-40s later, once the probes released their threads. Bridge
+// blocking work onto DispatchQueue.global, which has a much larger thread
+// pool dedicated to exactly this use case.
+private enum ConnectivityBlockingDispatcher {
+    private static let queue = DispatchQueue(label: "com.chenhuazhao.blaze.connectivity-blocking", qos: .utility, attributes: .concurrent)
+
+    static func run<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+            queue.async {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+}
+
 private enum ConnectivityCurlFetchProbe {
     enum ProxyKind: Sendable {
         case http(port: Int)
@@ -3199,7 +3220,7 @@ private enum ConnectivityCurlFetchProbe {
     }
 
     static func fetch(target: ConnectivityTarget, transport: String, proxy: ProxyKind) async -> ConnectivityTestResult {
-        await Task.detached(priority: .utility) {
+        await ConnectivityBlockingDispatcher.run {
             let start = Date()
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
@@ -3274,13 +3295,13 @@ private enum ConnectivityCurlFetchProbe {
                 detail: "curl fetch returned \(code)",
                 durationMilliseconds: elapsed
             )
-        }.value
+        }
     }
 }
 
 private enum ConnectivitySocketProbe {
     static func httpConnect(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
-        await Task.detached(priority: .utility) {
+        await ConnectivityBlockingDispatcher.run {
             let start = Date()
             let host = target.url.host ?? target.url.absoluteString
             do {
@@ -3318,11 +3339,11 @@ private enum ConnectivitySocketProbe {
                     durationMilliseconds: elapsed
                 )
             }
-        }.value
+        }
     }
 
     static func socks5Connect(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
-        await Task.detached(priority: .utility) {
+        await ConnectivityBlockingDispatcher.run {
             let start = Date()
             let host = target.url.host ?? target.url.absoluteString
             do {
@@ -3367,7 +3388,7 @@ private enum ConnectivitySocketProbe {
                     durationMilliseconds: elapsed
                 )
             }
-        }.value
+        }
     }
 
     private static func openLocalSocket(port: Int, timeoutSeconds: Int) throws -> Int32 {

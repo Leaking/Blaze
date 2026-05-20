@@ -1,5 +1,9 @@
 import Darwin
 import Foundation
+import os.log
+
+private let socks5HandlerLogger = Logger(subsystem: "com.chenhuazhao.blaze", category: "Socks5Handler")
+private let socks5AcceptLogger = Logger(subsystem: "com.chenhuazhao.blaze", category: "Socks5Accept")
 
 public actor LocalSOCKS5ProxyServer {
     private var listenerFD: Int32 = -1
@@ -75,13 +79,32 @@ public actor LocalSOCKS5ProxyServer {
         }
     }
 
+    // Dispatch handlers on a dedicated DispatchQueue rather than Task.detached.
+    // Each handler does blocking recv/send for the SOCKS5 handshake and then
+    // an async upstream dial; if it runs on Swift's cooperative concurrency
+    // pool, every concurrent connection holds a pool thread for the duration
+    // of the blocking syscalls. Under burst load (12+ probes plus background
+    // app traffic) that drained the pool and stalled new accepts. The
+    // dedicated queue scales independently.
+    private static let handlerQueue = DispatchQueue(label: "com.chenhuazhao.blaze.socks5-handler", qos: .userInitiated, attributes: .concurrent)
+
     private static func acceptLoop(listenerFD: Int32, logStore: ProxyEventStore, routingProfile: ProxyProfile, groupSelections: [String: String]) async {
+        var acceptedCount: UInt64 = 0
         while !Task.isCancelled {
             let clientFD = accept(listenerFD, nil, nil)
             if clientFD >= 0 {
+                acceptedCount &+= 1
                 ProxySocketOptions.prepare(clientFD)
-                Task.detached(priority: .utility) {
-                    await handleClient(clientFD, logStore: logStore, routingProfile: routingProfile, groupSelections: groupSelections)
+                let acceptIndex = acceptedCount
+                let acceptTime = DispatchTime.now()
+                handlerQueue.async {
+                    let queueWait = (DispatchTime.now().uptimeNanoseconds &- acceptTime.uptimeNanoseconds) / 1_000_000
+                    if queueWait > 50 {
+                        socks5AcceptLogger.notice("[\(acceptIndex, privacy: .public)] handler started after \(queueWait)ms queue wait")
+                    }
+                    Task {
+                        await handleClient(clientFD, logStore: logStore, routingProfile: routingProfile, groupSelections: groupSelections, acceptIndex: acceptIndex)
+                    }
                 }
             } else if errno == EBADF || errno == EINVAL {
                 break
@@ -89,14 +112,26 @@ public actor LocalSOCKS5ProxyServer {
         }
     }
 
-    private static func handleClient(_ clientFD: Int32, logStore: ProxyEventStore, routingProfile: ProxyProfile, groupSelections: [String: String]) async {
+    private static func handleClient(_ clientFD: Int32, logStore: ProxyEventStore, routingProfile: ProxyProfile, groupSelections: [String: String], acceptIndex: UInt64 = 0) async {
+        let started = DispatchTime.now()
+        func elapsedMillis() -> UInt64 {
+            (DispatchTime.now().uptimeNanoseconds &- started.uptimeNanoseconds) / 1_000_000
+        }
         var failureContext = ProxyFailureContext(method: "SOCKS5", target: "-", host: "-", port: 0, policy: "DIRECT", rule: nil, note: "Local SOCKS5 request")
         do {
             try acceptGreeting(from: clientFD)
+            let greetingMs = elapsedMillis()
+            if greetingMs > 100 {
+                socks5HandlerLogger.notice("[\(acceptIndex, privacy: .public)] greeting completed in \(greetingMs)ms (slow)")
+            }
             let request = try SOCKS5Request.read(from: clientFD)
+            let requestMs = elapsedMillis()
             failureContext.target = request.authority
             failureContext.host = request.host
             failureContext.port = request.port
+            if requestMs - greetingMs > 100 {
+                socks5HandlerLogger.notice("[\(acceptIndex, privacy: .public)] request.read for \(request.authority, privacy: .public) took \(requestMs - greetingMs)ms (slow)")
+            }
             if request.command == 0x03 {
                 try await handleUDPAssociate(clientFD, request: request, logStore: logStore, routingProfile: routingProfile, groupSelections: groupSelections)
                 return
@@ -108,7 +143,12 @@ public actor LocalSOCKS5ProxyServer {
                 return
             }
 
+            let routeStart = DispatchTime.now()
             let route = routeDecision(for: "\(request.host):\(request.port)", profile: routingProfile, groupSelections: groupSelections)
+            let routeMs = (DispatchTime.now().uptimeNanoseconds &- routeStart.uptimeNanoseconds) / 1_000_000
+            if routeMs > 50 {
+                socks5HandlerLogger.notice("[\(acceptIndex, privacy: .public)] routeDecision for \(request.authority, privacy: .public) took \(routeMs)ms (slow); chose \(route.policy, privacy: .public)")
+            }
             failureContext.policy = route.policy
             failureContext.rule = route.rule
             failureContext.note = route.note
