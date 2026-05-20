@@ -13,7 +13,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.info("Starting blaze packet tunnel: engine=\(configuration.engineKind.rawValue, privacy: .public), socks=\(configuration.socksHost, privacy: .public):\(configuration.socksPort, privacy: .public), http=\(configuration.httpHost, privacy: .public):\(configuration.httpPort, privacy: .public), excludedIPv4=\(configuration.excludedIPv4Addresses.count, privacy: .public), suppressIPv6DNS=\(configuration.suppressIPv6DNS, privacy: .public)")
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "254.1.1.1")
-        settings.mtu = 1500
+        settings.mtu = NSNumber(value: configuration.tunnelMTU)
 
         let ipv4 = NEIPv4Settings(addresses: ["10.255.0.2"], subnetMasks: ["255.255.255.255"])
         ipv4.includedRoutes = [NEIPv4Route.default()]

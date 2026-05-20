@@ -12,8 +12,10 @@ struct PacketTunnelRuntimeConfiguration {
     static let nativeVirtualDNSServer = "198.18.0.2"
     static let hevMapDNSServer = "198.19.0.1"
     static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+    static let defaultTunnelMTU = 1_280
 
     var engineKind: PacketTunnelEngineKind
+    var tunnelMTU: Int
     var httpHost: String
     var httpPort: Int
     var socksHost: String
@@ -32,6 +34,7 @@ struct PacketTunnelRuntimeConfiguration {
     init(providerConfiguration: [String: Any]?) {
         let engineName = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
         engineKind = PacketTunnelEngineKind(rawValue: engineName) ?? .native
+        tunnelMTU = Self.mtuValue(providerConfiguration?["tunnelMTU"], defaultValue: Self.defaultTunnelMTU)
         httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
         httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
         socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
@@ -79,6 +82,10 @@ struct PacketTunnelRuntimeConfiguration {
             return number.intValue
         }
         return defaultValue
+    }
+
+    private static func mtuValue(_ value: Any?, defaultValue: Int) -> Int {
+        min(max(intValue(value, defaultValue: defaultValue), 576), 1_500)
     }
 
     private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {

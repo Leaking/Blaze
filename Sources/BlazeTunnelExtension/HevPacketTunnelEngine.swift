@@ -400,7 +400,7 @@ private struct HevSocks5TunnelConfiguration {
         let udpMode = configuration.hevUDPMode == "tcp" ? "tcp" : "udp"
         let config = """
         tunnel:
-          mtu: 1500
+          mtu: \(configuration.tunnelMTU)
         socks5:
           address: \(Self.yamlSingleQuoted(configuration.socksHost))
           port: \(configuration.socksPort)

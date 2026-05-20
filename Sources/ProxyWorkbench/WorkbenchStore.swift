@@ -53,8 +53,11 @@ struct ConnectivityTestResult: Identifiable, Hashable, Sendable {
         if transport == "Policy", name.hasSuffix(" Route") {
             return false
         }
-        if transport == "HTTP CONNECT" || transport == "HTTP Fetch" {
+        if transport == "HTTP CONNECT" {
             return false
+        }
+        if transport == "HTTP Fetch" {
+            return name == "Google"
         }
         if transport == "SOCKS5 CONNECT", name != "Google" {
             return false
@@ -177,6 +180,10 @@ struct SurgeAppSnapshot: Hashable, Sendable {
 
     var restoreLabel: String {
         bundleIdentifier ?? bundlePath ?? appName
+    }
+
+    var hasConnectedNetworkTunnel: Bool {
+        networkTunnelStatus.localizedCaseInsensitiveContains("appears connected")
     }
 }
 
@@ -340,6 +347,9 @@ final class WorkbenchStore: ObservableObject {
         if surgeAppSnapshot.isRunning {
             return surgeAppSnapshot.summary
         }
+        if surgeAppSnapshot.hasConnectedNetworkTunnel {
+            return "Surge VPN active"
+        }
         if effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze && !packetTunnelConnected {
             return "Other proxy active"
         }
@@ -347,21 +357,21 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private var surgeConflictTestStatus: ConnectivityTestStatus {
-        if packetTunnelConnected && surgeAppSnapshot.isRunning {
+        if packetTunnelConnected && (surgeAppSnapshot.isRunning || surgeAppSnapshot.hasConnectedNetworkTunnel) {
             return .failed
         }
         if !packetTunnelConnected && effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze {
             return .failed
         }
-        if surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected") && !packetTunnelConnected {
+        if surgeAppSnapshot.hasConnectedNetworkTunnel && !packetTunnelConnected {
             return .failed
         }
         return .info
     }
 
     private var surgeConflictTestDetail: String {
-        if packetTunnelConnected && surgeAppSnapshot.isRunning {
-            return "Surge is running while Blaze Packet Tunnel is connected; it may retake DNS or utun"
+        if packetTunnelConnected && (surgeAppSnapshot.isRunning || surgeAppSnapshot.hasConnectedNetworkTunnel) {
+            return "Surge app or VPN service is active while Blaze Packet Tunnel is connected; it may retake DNS or utun"
         }
         if !packetTunnelConnected && effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze {
             return "Effective proxy is not Blaze: \(effectiveProxyStatus.summary)"
@@ -387,6 +397,9 @@ final class WorkbenchStore: ObservableObject {
             return note.contains("fake-ip dns bypass failed")
                 || note.contains("upstream dns bypass failed")
                 || note.contains("local dns resolved upstream to 198.18")
+                || note.contains("no upstream response bytes")
+                || note.contains("operation canceled")
+                || note.contains("connection reset by peer")
         }
     }
 
@@ -1034,9 +1047,32 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
-    private func closeSurgeApplications() async -> Bool {
+    private func prepareSurgeForBlaze() async -> Bool {
+        var prepared = true
+
+        if surgeAppSnapshot.hasConnectedNetworkTunnel {
+            do {
+                try await Self.stopSurgeVPNServiceIfAvailable()
+            } catch {
+                statusText = "Failed to stop Surge VPN service: \(error)"
+                prepared = false
+            }
+
+            for _ in 0..<30 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                await refreshSurgeStatus(updateStatusText: false)
+                if !surgeAppSnapshot.hasConnectedNetworkTunnel {
+                    break
+                }
+            }
+
+            if surgeAppSnapshot.hasConnectedNetworkTunnel {
+                return false
+            }
+        }
+
         let runningApps = Self.runningSurgeApplications()
-        guard !runningApps.isEmpty else { return true }
+        guard !runningApps.isEmpty else { return prepared }
 
         for app in runningApps {
             _ = app.terminate()
@@ -1045,7 +1081,7 @@ final class WorkbenchStore: ObservableObject {
         for _ in 0..<30 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             if Self.runningSurgeApplications().isEmpty {
-                return true
+                return prepared
             }
         }
 
@@ -1079,14 +1115,14 @@ final class WorkbenchStore: ObservableObject {
                 try await Self.openSurge(candidate)
             }
 
-            let shouldRestoreVPN = candidate.networkTunnelStatus.localizedCaseInsensitiveContains("connected")
+            let shouldRestoreVPN = candidate.hasConnectedNetworkTunnel
             for attempt in 0..<16 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if shouldRestoreVPN {
                     try? await Self.startSurgeVPNServiceIfAvailable()
                 }
                 await refreshSurgeStatus(updateStatusText: false)
-                let surgeVPNConnected = surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected")
+                let surgeVPNConnected = surgeAppSnapshot.hasConnectedNetworkTunnel
                 if surgeAppSnapshot.isRunning && (!shouldRestoreVPN || surgeVPNConnected) {
                     let vpnText = shouldRestoreVPN ? "; VPN connected" : ""
                     setStartupStep(stepID, status: .passed, detail: "Restarted Surge: \(surgeAppSnapshot.restoreLabel)\(vpnText)")
@@ -1267,21 +1303,25 @@ final class WorkbenchStore: ObservableObject {
             await refreshSurgeStatus(updateStatusText: false)
             await refreshSystemProxyStatus(updateStatusText: false)
 
-            if surgeAppSnapshot.isRunning {
+            if surgeAppSnapshot.isRunning || surgeAppSnapshot.hasConnectedNetworkTunnel {
                 surgeRestoreCandidate = surgeAppSnapshot
                 surgeRestoreText = "Restore candidate: \(surgeAppSnapshot.restoreLabel)"
+                let reason = [
+                    surgeAppSnapshot.isRunning ? "Surge app is running" : nil,
+                    surgeAppSnapshot.hasConnectedNetworkTunnel ? "Surge VPN service is connected" : nil
+                ].compactMap(\.self).joined(separator: "; ")
                 setStartupStep(
                     stepID,
                     status: .running,
-                    detail: "Surge is running; requesting quit before Blaze VPN starts"
+                    detail: "\(reason); stopping it before Blaze VPN starts"
                 )
-                let closed = await closeSurgeApplications()
+                let closed = await prepareSurgeForBlaze()
                 await refreshSurgeStatus(updateStatusText: false)
-                if closed && !surgeAppSnapshot.isRunning {
-                    setStartupStep(stepID, status: .passed, detail: "Surge closed; \(surgeRestoreText)")
+                if closed && !surgeAppSnapshot.isRunning && !surgeAppSnapshot.hasConnectedNetworkTunnel {
+                    setStartupStep(stepID, status: .passed, detail: "Surge app/VPN stopped; \(surgeRestoreText)")
                     return true
                 }
-                setStartupStep(stepID, status: .failed, detail: "Surge is still running; quit it manually before starting Blaze VPN")
+                setStartupStep(stepID, status: .failed, detail: "Surge is still active: \(surgeAppSnapshot.summary); \(surgeAppSnapshot.networkTunnelStatus)")
                 return false
             }
 
@@ -1464,7 +1504,7 @@ final class WorkbenchStore: ObservableObject {
         } else if effectiveProxyStatus.anyProxyEnabled && !effectiveProxyStatus.matchesBlaze && !packetTunnelConnected {
             surgeStatus = .actionNeeded
             surgeDetail = "Another effective proxy is active: \(effectiveProxyStatus.summary)"
-        } else if surgeAppSnapshot.networkTunnelStatus.localizedCaseInsensitiveContains("connected") {
+        } else if surgeAppSnapshot.hasConnectedNetworkTunnel {
             surgeStatus = .actionNeeded
             surgeDetail = surgeAppSnapshot.networkTunnelStatus
         } else {
@@ -1693,7 +1733,7 @@ final class WorkbenchStore: ObservableObject {
         do {
             let snapshot = try await PacketTunnelConfigurationManager.configurationSnapshot()
             packetTunnelConfigurationSnapshot = snapshot
-            packetTunnelConfigurationText = "\(snapshot.engineDescription); DNS \(snapshot.tunnelDNSServers.joined(separator: ", ")); \(snapshot.listenerSummary)"
+            packetTunnelConfigurationText = "\(snapshot.engineDescription); MTU \(snapshot.tunnelMTU); DNS \(snapshot.tunnelDNSServers.joined(separator: ", ")); \(snapshot.listenerSummary)"
             if updateStatusText {
                 statusText = "Packet tunnel config: \(packetTunnelConfigurationText)"
             }
@@ -2044,6 +2084,38 @@ final class WorkbenchStore: ObservableObject {
                     }
                     .joined(separator: " ")
                 throw NetworkServiceDetectionError.commandFailed(message.isEmpty ? "scutil --nc start exited with \(process.terminationStatus)" : message)
+            }
+        }.value
+    }
+
+    private nonisolated static func stopSurgeVPNServiceIfAvailable() async throws {
+        let text = try await scutilNetworkConnectionListOutput()
+        guard let serviceIdentifier = surgeVPNServiceIdentifier(from: text) else {
+            throw NetworkServiceDetectionError.commandFailed("No Surge VPN service identifier found")
+        }
+        try await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+            process.arguments = ["--nc", "stop", serviceIdentifier]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus != 0 {
+                let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let message = [String(data: output, encoding: .utf8), String(data: errorOutput, encoding: .utf8)]
+                    .compactMap { value -> String? in
+                        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return trimmed.isEmpty ? nil : trimmed
+                    }
+                    .joined(separator: " ")
+                throw NetworkServiceDetectionError.commandFailed(message.isEmpty ? "scutil --nc stop exited with \(process.terminationStatus)" : message)
             }
         }.value
     }
@@ -2603,31 +2675,25 @@ final class WorkbenchStore: ObservableObject {
         let httpPort = proxyListenPort
         let socksPort = socksListenPort
 
-        await withTaskGroup(of: ConnectivityTestResult.self) { group in
-            for target in targets {
-                group.addTask {
-                    await ConnectivitySocketProbe.httpConnect(
-                        target: target,
-                        proxyPort: httpPort
-                    )
-                }
-                group.addTask {
-                    await ConnectivityHTTPFetchProbe.fetch(
-                        target: target,
-                        proxyPort: httpPort
-                    )
-                }
-                group.addTask {
-                    await ConnectivitySocketProbe.socks5Connect(
-                        target: target,
-                        proxyPort: socksPort
-                    )
-                }
-            }
-
-            for await result in group {
-                await appendConnectivityResult(result)
-            }
+        for target in targets {
+            await appendConnectivityResult(
+                await ConnectivityHTTPFetchProbe.fetch(
+                    target: target,
+                    proxyPort: httpPort
+                )
+            )
+            await appendConnectivityResult(
+                await ConnectivitySocketProbe.httpConnect(
+                    target: target,
+                    proxyPort: httpPort
+                )
+            )
+            await appendConnectivityResult(
+                await ConnectivitySocketProbe.socks5Connect(
+                    target: target,
+                    proxyPort: socksPort
+                )
+            )
         }
     }
 

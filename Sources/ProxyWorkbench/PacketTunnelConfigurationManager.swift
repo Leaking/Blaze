@@ -170,8 +170,10 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
     static let nativeVirtualDNSServer = "198.18.0.2"
     static let hevMapDNSServer = "198.19.0.1"
     static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+    static let defaultTunnelMTU = 1_280
 
     var packetEngine: String
+    var tunnelMTU: Int
     var httpHost: String
     var httpPort: Int
     var socksHost: String
@@ -189,6 +191,7 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
 
     init(providerConfiguration: [String: Any]?) {
         packetEngine = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
+        tunnelMTU = Self.mtuValue(providerConfiguration?["tunnelMTU"], defaultValue: Self.defaultTunnelMTU)
         httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
         httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
         socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
@@ -255,6 +258,10 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
         return defaultValue
     }
 
+    private static func mtuValue(_ value: Any?, defaultValue: Int) -> Int {
+        min(max(intValue(value, defaultValue: defaultValue), 576), 1_500)
+    }
+
     private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {
         if let bool = value as? Bool {
             return bool
@@ -278,6 +285,7 @@ enum PacketTunnelConfigurationManager {
         httpPort: Int,
         socksPort: Int,
         excludedIPv4Addresses: [String] = [],
+        tunnelMTU: Int = PacketTunnelConfigurationSnapshot.defaultTunnelMTU,
         packetEngine: String = "native",
         hevLibraryDirectory: String? = nil,
         hevUDPMode: String = "udp"
@@ -289,6 +297,7 @@ enum PacketTunnelConfigurationManager {
         var providerConfiguration: [String: Any] = [
             "mode": "tun2socks",
             "packetEngine": packetEngine,
+            "tunnelMTU": min(max(tunnelMTU, 576), 1_500),
             "createdBy": "blaze",
             "httpHost": "127.0.0.1",
             "httpPort": httpPort,
