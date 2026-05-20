@@ -1804,6 +1804,7 @@ final class WorkbenchStore: ObservableObject {
     func handleAutomationURL(_ url: URL) {
         guard url.scheme == "blaze", url.host == "control" else { return }
         let action = url.pathComponents.dropFirst().first ?? ""
+        recordAutomationEvent(action: action, url: url)
 
         switch action {
         case "start-listeners":
@@ -1825,6 +1826,23 @@ final class WorkbenchStore: ObservableObject {
             Task { await runStartupWatchdogRecoveryNow(reason: "Automation recovery requested") }
         default:
             statusText = "Unknown automation URL action: \(action)"
+        }
+    }
+
+    private func recordAutomationEvent(action: String, url: URL) {
+        let event = ProxyServerEvent(
+            method: "AUTO",
+            target: url.absoluteString,
+            host: "blaze",
+            port: 0,
+            policy: "Automation",
+            status: "Info",
+            rule: "Control",
+            note: "Received automation action: \(action.isEmpty ? "<empty>" : action)"
+        )
+        Task {
+            await proxyLogStore.append(event)
+            await refreshProxyEvents()
         }
     }
 

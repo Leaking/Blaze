@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Darwin
 import SwiftUI
 
@@ -157,12 +158,33 @@ final class BlazeAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         handleAutomationURLs(urls)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NSAppleEventManager.shared().removeEventHandler(
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
         store?.restoreSystemProxyForTermination()
+    }
+
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+              let url = URL(string: urlString) else {
+            return
+        }
+        handleAutomationURLs([url])
     }
 
     private func handleAutomationURLs(_ urls: [URL]) {
