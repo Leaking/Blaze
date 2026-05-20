@@ -1723,7 +1723,22 @@ final class WorkbenchStore: ObservableObject {
         if let target {
             startupWorkflowSteps[index].target = target
         }
-        if previousStatus != status || (status == .failed && previousDetail != detail) {
+        let detailChanged = previousDetail != detail
+        let shouldLog: Bool
+        switch status {
+        case .pending, .info:
+            shouldLog = false
+        case .running:
+            // Log when the step first enters running, and on each significant
+            // detail change while running (so Step 7's probe-by-probe progress
+            // reaches proxy-events.log).
+            shouldLog = previousStatus != status || detailChanged
+        case .passed, .actionNeeded:
+            shouldLog = previousStatus != status
+        case .failed:
+            shouldLog = previousStatus != status || detailChanged
+        }
+        if shouldLog {
             recordStartupStepEvent(
                 step: stepID,
                 status: status,

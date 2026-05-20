@@ -61,7 +61,7 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
         let resolvedHost = try await UpstreamEndpointResolver.connectionHost(for: upstream.host)
         let resolveMillis = elapsedMillis(since: resolveStart)
         let connectionTag = UUID().uuidString.prefix(8)
-        trojanUpstreamLogger.info("[\(connectionTag, privacy: .public)] resolve host=\(upstream.host, privacy: .public) -> \(resolvedHost.address, privacy: .public) in \(resolveMillis)ms; destination=\(String(describing: destination), privacy: .public)")
+        trojanUpstreamLogger.notice("[\(connectionTag, privacy: .public)] resolve host=\(upstream.host, privacy: .public) -> \(resolvedHost.address, privacy: .public) in \(resolveMillis)ms; destination=\(String(describing: destination), privacy: .public)")
         let connection = NWConnection(host: NWEndpoint.Host(resolvedHost.address), port: port, using: parameters)
         let requestHeader = try TrojanProtocol.requestHeader(password: password, address: destination)
         let upstreamConnection = TrojanUpstreamConnection(
@@ -76,7 +76,7 @@ final class TrojanUpstreamConnection: @unchecked Sendable {
             try await upstreamConnection.start(timeout: .seconds(12), tag: String(connectionTag))
             let connectMillis = elapsedMillis(since: connectStart)
             let interfaceName = connection.currentPath?.availableInterfaces.first?.name ?? "?"
-            trojanUpstreamLogger.info("[\(connectionTag, privacy: .public)] ready in \(connectMillis)ms via interface=\(interfaceName, privacy: .public)")
+            trojanUpstreamLogger.notice("[\(connectionTag, privacy: .public)] ready in \(connectMillis)ms via interface=\(interfaceName, privacy: .public)")
         } catch {
             let connectMillis = elapsedMillis(since: connectStart)
             trojanUpstreamLogger.error("[\(connectionTag, privacy: .public)] connect failed after \(connectMillis)ms: \(String(describing: error), privacy: .public)")

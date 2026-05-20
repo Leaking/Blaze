@@ -104,10 +104,58 @@ Record every self-test cycle here before and after validation. Include the build
 - Main branch reference: not consulted this cycle — root cause was an extension packaging miss, not a protocol regression.
 - External references: HEV upstream `heiher/hev-socks5-tunnel@3ffa5b9` used as-is. Did not need tun2socks/sing-box comparison because the failure was below the protocol layer.
 - Validation commands: `swift test` (99 passed, 1 skipped, 0 failures); package with `BLAZE_BUILD_NUMBER=49 ./scripts/build-app.sh`; `./scripts/notarize-app.sh build/blaze.app`; install + guarded startup workflow (pending).
-- Startup workflow result: pending.
-- Watchdog result: pending.
-- Surge restore: pending.
-- App/ext version check: will run after install.
-- Remaining risk: Step 5 should now pass, but Step 6 (tunnel diagnostics) or Step 7 (connectivity diagnostics) may still surface real protocol issues that no prior cycle has been able to see clearly.
-- Next decision: if Step 5 passes and Step 7 produces results, classify per the result rules. If Step 7 fails, use the new `proxy-events.log` entries plus `log show` to pick the first protocol-layer fix for Build 50.
+- Startup workflow result: **Steps 1–6 passed**, Step 7 failed. Recovery file: `phase=restored`, `reason=Startup workflow stopped at step 7`, `appTrust=accepted`, `systemExtension=Active system extension matches bundled build 0.1.0/49`, `connectivityResults=25`. Three blocking failures: `Google SOCKS5 Fetch / Baidu SOCKS5 Fetch / ChatGPT SOCKS5 Fetch`, all `curl: (28) Connection timed out after 20s`. Critical proxy failures showed `tunnel X B up / 0 B down; no upstream response bytes`.
+- Watchdog result: external 5-min watchdog did not fire; in-app watchdog recovered at 2026-05-20T16:06:42Z.
+- Surge restore: Step 8 passed; Surge VPN reconnected. (Run 2 of build 49 had Step 8 fail "Surge app is running but VPN did not reconnect" — transient.)
+- App/ext version check: app 0.1.0/49, sysext 0.1.0/49, `spctl: accepted, source=Notarized Developer ID`.
+- Critical follow-on observation (Run 2, same build, no code change): 25 probes failed identically AGAIN with all the same destinations and the same timing pattern → bug is reproducible, not transient. Also, dozens of "Connected" SOCKS5 entries for real apps (claude.ai, anthropic, telegram, feishu, github, mtalk.google) appeared at 16:21:51–52, RIGHT AFTER Step 7 ended — the Trojan upstream IS reachable; the failure mode is probe-specific.
+- Remaining risk: Step 7 protocol issue not yet diagnosed.
+- Next decision: add Trojan-upstream timing diagnostics and rerun as Build 50 to identify which layer breaks (TLS handshake, route, request header, response).
+
+## 2026-05-21 00:33 Asia/Shanghai - Build 50
+
+- Commit: `8dcf2fb Instrument Trojan upstream connection timing and state transitions`
+- Notarization: id `f132ab80-a9a8-445b-b515-590986edac3f`, Accepted, stapled.
+- Triggering evidence: Build 49 confirmed Steps 1–6 work and that Step 7 fails reproducibly with the upstream actually reachable.
+- Hypothesis: Step 7 failure is in the TLS handshake or in route-loop (NWConnection ignoring `requiredInterface = en1` and going through utun4). New per-connection logs will distinguish these.
+- Fix/change: `Sources/ProxyWorkbenchCore/TrojanUpstreamConnection.swift` adds `os.log` subsystem `com.chenhuazhao.blaze` category `TrojanUpstream` that records (a) DNS resolve time and resolved address, (b) every `NWConnection.State` transition with elapsed millis, (c) the ready/failed time, (d) the interface name reported by `NWConnection.currentPath`. On timeout, the thrown error now carries the full state timeline so it reaches `proxy-events.log` via the existing failure path.
+- Validation commands: `swift test` (99 passed); `BLAZE_BUILD_NUMBER=50 ./scripts/build-app.sh`; notarize+staple; install; guarded startup workflow.
+- Startup workflow result: Steps 1–6 passed; Step 7 failed identically (third consecutive identical failure).
+- Watchdog result: in-app recovery succeeded; external watchdog did not fire.
+- Surge restore: passed.
+- App/ext version check: all 0.1.0/50, notarized + stapled.
+- **Diagnostic data unlocked:** TrojanUpstream logs from build 50 showed ALL handshakes complete in **36–376ms** (max ~1s for one outlier), every connection via `interface=en1` (no route loop). Cross-referenced proxy-events.log: probe destinations (google/baidu/chatgpt) DO eventually establish Trojan upstream connections — at 16:37:11–14, i.e. **30–40 seconds AFTER the probe's 18s timeout expired**. So the local SOCKS5/HTTP listeners are processing the probe requests, just lagging badly under burst load. Real apps' connections continue completing in parallel with no delay.
+- Working hypothesis: the local SOCKS5/HTTP servers stall on something inside `handleClient` — most likely `routeDecision`, which constructs `RuleEngine(rules: profile.rules)` and linearly scans 7536 rules, compiling `NSRegularExpression` inside the loop for every URL-REGEX and DOMAIN-WILDCARD match.
+- Next decision: cache the regex compilation, port-set parsing, and lowercased rule values in a process-wide `NSCache` to remove the per-request cost. Rerun as Build 51.
+
+## 2026-05-21 00:51 Asia/Shanghai - Build 51
+
+- Commit: `9515a1d Cache compiled regexes, port sets, and lowercased values in RuleEngine`
+- Notarization: id `4e0389a2-0510-44fb-85dd-bfaf141e027d`, Accepted, stapled.
+- Triggering evidence: Build 50's diagnostic data isolated the bottleneck to within `handleClient`; `RuleEngine.firstMatch` was the most expensive suspect.
+- Hypothesis: caching the per-rule compiled values will collapse the routeDecision cost from O(rules × pattern-compilation) to O(rules × hash-lookup), letting concurrent connections process at line rate.
+- Fix/change: `Sources/ProxyWorkbenchCore/RuleEngine.swift` introduces `RuleValueCache` — process-wide `NSCache<NSString, ...>` for compiled regexes (URL-REGEX and DOMAIN-WILDCARD anchored), parsed DEST-PORT sets, and lowercased rule values. Keyed by raw pattern string. Marked `nonisolated(unsafe)` because `NSCache` is internally thread-safe and the cached values are immutable.
+- Validation commands: `swift test` (99 passed); `BLAZE_BUILD_NUMBER=51 ./scripts/build-app.sh`; notarize+staple; install; guarded startup workflow.
+- Startup workflow result: Steps 1–6 passed; **Step 7 failed identically again** (fourth consecutive identical failure with the same three blocking probes). Cache change delivered no measurable improvement → routeDecision was not the hot spot, or not the only one.
+- Watchdog result: in-app recovery succeeded.
+- Surge restore: passed.
+- App/ext version check: all 0.1.0/51, notarized + stapled.
+- **Key new observation:** Step 7 takes **1m 45s wall-clock** (16:53:36 → 16:55:21). Probes have 18–20s timeouts and are launched concurrently via `withTaskGroup` (3 targets × 4 transports = 12 tasks), so worst case should be ~25s. The extra ~80s strongly suggests pre-probe work (`runConnectivityDiagnostics` calls `ConnectivityDNSProbe.evaluate` and several refreshes before the probes ever fire) or that `withTaskGroup` is not actually parallelizing as expected. Also: the burst of "Connected" SOCKS5 entries at 16:53:35–36 (right when Step 5 finished) and again at 16:54:06 shows the SOCKS5 server is NOT globally stalled — only the probe path is slow.
+- **Diagnostic blind spot identified:** the new `TrojanUpstream` Logger published at `.info` level, which `log show` does not persist by default — so build 51 has zero TrojanUpstream entries despite the connections clearly happening. Build 52 will need `.notice` for guaranteed persistence.
+- Remaining risk: real Step 7 bottleneck still unknown. Best leads for next session:
+  1. Add timing instrumentation INSIDE `LocalSOCKS5ProxyServer.handleClient` (accept → greeting → request.read → routeDecision → upstream dial → reply sent). This is what will pinpoint the slow stage.
+  2. Investigate `ConnectivityDNSProbe.evaluate` and `RouteProbe.evaluate` durations — they run before the probe burst.
+  3. Check whether `withTaskGroup` is genuinely concurrent for these probes; the result-stream `for await` blocks until each result lands, which is fine, but the launch order may serialize on something.
+  4. Manually `curl --socks5 127.0.0.1:19081 https://www.google.com` while blaze is running and Step 7 is not — if it succeeds quickly, the server is fine and only the probe-burst path is broken. If it also takes 30+s, the listener itself is slow.
+- Next decision: pause unattended loop here. Next session should be interactive: rebuild as Build 52 with handleClient timing + `.notice` logger, and run with manual single-connection probes for direct comparison. Watchdog discipline is now proven (3 consecutive disruptive cycles, Surge cleanly restored each time, network never permanently lost).
+
+## Loop infrastructure delivered in this session (Builds 47→51)
+
+- End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
+- `setStartupStep` writes a `STARTUP` event for every status transition (including running→running detail changes after the latest tweak) → `proxy-events.log` now contains a complete timeline per workflow run.
+- `scripts/build-app.sh` refuses to ship a bundle missing HEV dylibs (with `BLAZE_ALLOW_MISSING_HEV_DYLIB=1` escape hatch).
+- HEV upstream `heiher/hev-socks5-tunnel@3ffa5b91ec08d631d08e35203063427ddf121318` builds reproducibly via `scripts/dev/build-hev-socks5-tunnel-dylibs.sh`.
+- `TrojanUpstream` `os.log` category provides per-connection state-machine timing and interface attribution (will be `.notice`-persisted from Build 52 forward).
+- `RuleValueCache` removes per-request regex/port/lowercase parsing cost.
+- Validation log discipline maintained: every cycle records build number, notarization id, hypothesis, fix, commands, watchdog behavior, and next decision.
 
