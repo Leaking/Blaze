@@ -1190,6 +1190,9 @@ final class WorkbenchStore: ObservableObject {
             let canContinue = await performStartupWorkflowStep(stepID)
             guard canContinue else {
                 markRemainingStartupStepsSkipped(after: stepID, reason: "Skipped because step \(stepID) did not finish successfully")
+                if startupWatchdogShouldRecover {
+                    await recoverFromStartupWatchdog(reason: "Startup workflow stopped at step \(stepID)")
+                }
                 return
             }
         }
@@ -2954,75 +2957,82 @@ private struct ConnectivityTarget: Sendable {
 
 private enum ConnectivityHTTPFetchProbe {
     static func fetch(target: ConnectivityTarget, proxyPort: Int) async -> ConnectivityTestResult {
-        let start = Date()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 12
-        configuration.timeoutIntervalForResource = 18
-        configuration.waitsForConnectivity = false
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        configuration.connectionProxyDictionary = [
-            kCFNetworkProxiesHTTPEnable as String: true,
-            kCFNetworkProxiesHTTPProxy as String: "127.0.0.1",
-            kCFNetworkProxiesHTTPPort as String: proxyPort,
-            kCFNetworkProxiesHTTPSEnable as String: true,
-            kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1",
-            kCFNetworkProxiesHTTPSPort as String: proxyPort
-        ]
+        await Task.detached(priority: .utility) {
+            let start = Date()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
 
-        let session = URLSession(configuration: configuration)
-        defer {
-            session.invalidateAndCancel()
-        }
+            var arguments = [
+                "--silent",
+                "--show-error",
+                "--output", "/dev/null",
+                "--write-out", "%{http_code}",
+                "--proxy", "http://127.0.0.1:\(proxyPort)",
+                "--connect-timeout", "8",
+                "--max-time", "18",
+                "--http1.1",
+                "--user-agent", "blaze-connectivity-test",
+                "--header", "Accept: */*"
+            ]
+            if target.fetchMethod.uppercased() == "HEAD" {
+                arguments.append("--head")
+            } else {
+                arguments.append(contentsOf: ["--request", target.fetchMethod])
+            }
+            arguments.append(target.url.absoluteString)
+            process.arguments = arguments
 
-        var request = URLRequest(url: target.url)
-        request.httpMethod = target.fetchMethod
-        request.setValue("blaze-connectivity-test", forHTTPHeaderField: "User-Agent")
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.setValue("close", forHTTPHeaderField: "Connection")
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
 
-        do {
-            let (_, response) = try await session.data(for: request)
-            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
-            guard let httpResponse = response as? HTTPURLResponse else {
+            do {
+                try process.run()
+            } catch {
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
                 return ConnectivityTestResult(
                     name: target.name,
                     transport: "HTTP Fetch",
                     target: target.url.host ?? target.url.absoluteString,
                     status: .failed,
-                    detail: "No HTTP response",
+                    detail: "curl launch failed: \(error)",
                     durationMilliseconds: elapsed
                 )
             }
-            let code = httpResponse.statusCode
+            process.waitUntilExit()
+
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let code = Int(output.suffix(3)) ?? 0
+            guard process.terminationStatus == 0 else {
+                let detail = [errorOutput, output.isEmpty ? nil : "http_code=\(output)"]
+                    .compactMap { value -> String? in
+                        guard let value, !value.isEmpty else { return nil }
+                        return value
+                    }
+                    .joined(separator: "; ")
+                return ConnectivityTestResult(
+                    name: target.name,
+                    transport: "HTTP Fetch",
+                    target: target.url.host ?? target.url.absoluteString,
+                    status: .failed,
+                    detail: detail.isEmpty ? "curl exited with \(process.terminationStatus)" : "curl exited with \(process.terminationStatus): \(detail)",
+                    durationMilliseconds: elapsed
+                )
+            }
             return ConnectivityTestResult(
                 name: target.name,
                 transport: "HTTP Fetch",
                 target: target.url.host ?? target.url.absoluteString,
                 status: target.expectedStatus.contains(code) ? .passed : .failed,
-                detail: "HTTP fetch returned \(code)",
+                detail: "curl HTTP fetch returned \(code)",
                 durationMilliseconds: elapsed
             )
-        } catch {
-            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
-            return ConnectivityTestResult(
-                name: target.name,
-                transport: "HTTP Fetch",
-                target: target.url.host ?? target.url.absoluteString,
-                status: .failed,
-                detail: errorDescription(error),
-                durationMilliseconds: elapsed
-            )
-        }
-    }
-
-    private static func errorDescription(_ error: Error) -> String {
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain {
-            return nsError.localizedDescription
-        }
-        return String(describing: error)
+        }.value
     }
 }
 
