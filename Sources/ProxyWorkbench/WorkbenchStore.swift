@@ -2,6 +2,7 @@ import AppKit
 import CFNetwork
 import Darwin
 import Foundation
+import Network
 import os.log
 import ProxyWorkbenchCore
 
@@ -340,6 +341,8 @@ final class WorkbenchStore: ObservableObject {
         binaryURL: WorkbenchStore.embeddedLeafBinaryURL(),
         runtimeDir: WorkbenchStore.leafRuntimeDir()
     )
+    private var networkPathMonitor: NWPathMonitor?
+    private var lastObservedInterface: String?
 
     private static func embeddedLeafBinaryURL() -> URL {
         if let url = Bundle.main.url(forResource: "leaf", withExtension: nil) {
@@ -371,6 +374,81 @@ final class WorkbenchStore: ObservableObject {
             self?.packetTunnelStatusText = message
             self?.statusText = message
         }
+        installLeafLifecycleHandler()
+        startNetworkPathMonitor()
+    }
+
+    private func installLeafLifecycleHandler() {
+        // Capture `self` as a weakly-referenced wrapper inside a Sendable
+        // closure. Plain `[weak self]` would only weaken the outer Task's
+        // capture; the inner Sendable closure cannot reference that captured
+        // var directly across actor boundaries.
+        let controller = leafController
+        let weakSelf = LeafLifecycleSelfRef(store: self)
+        Task {
+            await controller.setLifecycleHandler { @Sendable event in
+                await weakSelf.deliver(event)
+            }
+        }
+    }
+
+    fileprivate func handleLeafLifecycle(_ event: LeafController.LifecycleEvent) async {
+        switch event {
+        case .started(let pid):
+            proxyServerRunning = true
+            socksServerRunning = true
+            statusText = "Leaf running (pid \(pid))"
+        case .exited(let status, let willRestart, let attempt):
+            if willRestart {
+                statusText = "Leaf exited status=\(status) attempt=\(attempt); restarting"
+            } else {
+                proxyServerRunning = false
+                socksServerRunning = false
+                statusText = "Leaf stopped (exit status=\(status))"
+            }
+        case .stopped:
+            proxyServerRunning = false
+            socksServerRunning = false
+        case .restarting(let attempt, let delayMillis):
+            statusText = "Leaf restart attempt \(attempt) in \(delayMillis)ms"
+        }
+    }
+
+    /// Watch for network path changes so leaf gets restarted with a fresh
+    /// boundif when the physical interface flips (e.g. Wi-Fi reconnect causes
+    /// en1 → en0, or DNS changes after sleep/wake). Without this, leaf stays
+    /// pinned to a dead interface name and silently fails every dial.
+    private func startNetworkPathMonitor() {
+        let monitor = NWPathMonitor()
+        networkPathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            let interfaceName = path.availableInterfaces.first(where: {
+                $0.type == .wifi || $0.type == .wiredEthernet
+            })?.name
+            Task { @MainActor [weak self] in
+                await self?.handleNetworkPathChange(newInterface: interfaceName)
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.chenhuazhao.blaze.network-path"))
+    }
+
+    private func handleNetworkPathChange(newInterface: String?) async {
+        // Only act when the interface name actually changed; NWPathMonitor
+        // also fires on DNS/proxy/scoped flag changes which we don't care
+        // about here.
+        guard newInterface != lastObservedInterface else { return }
+        let previous = lastObservedInterface
+        lastObservedInterface = newInterface
+        if previous == nil {
+            // First observation; nothing to reconfigure.
+            return
+        }
+        // Only restart if leaf is currently the active listener.
+        let running = await leafController.isRunning
+        guard running else { return }
+        statusText = "Network changed (\(previous ?? "?") → \(newInterface ?? "?")); restarting leaf"
+        await ensureLeafRunning()
     }
 
     var localProxySummary: String {
@@ -3734,5 +3812,19 @@ private enum NetworkServiceDetectionError: Error, CustomStringConvertible {
         case .commandFailed(let message):
             message
         }
+    }
+}
+
+/// Sendable wrapper that lets a Sendable closure (e.g. the LeafController
+/// lifecycle handler) deliver events into a MainActor-isolated WorkbenchStore
+/// without referencing the outer Task's captured weak self. The inner closure
+/// can safely capture this wrapper, and the wrapper hops to the main actor on
+/// each delivery.
+final class LeafLifecycleSelfRef: @unchecked Sendable {
+    private weak var store: WorkbenchStore?
+    init(store: WorkbenchStore) { self.store = store }
+    func deliver(_ event: LeafController.LifecycleEvent) async {
+        guard let store else { return }
+        await store.handleLeafLifecycle(event)
     }
 }

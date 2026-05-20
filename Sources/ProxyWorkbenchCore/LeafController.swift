@@ -193,18 +193,45 @@ public actor LeafController {
         }
     }
 
+    /// Notification sent when leaf transitions between running / stopped /
+    /// restarting. WorkbenchStore subscribes so it can keep
+    /// proxyServerRunning / socksServerRunning honest even when leaf restarts
+    /// itself after a crash or network flip.
+    public enum LifecycleEvent: Sendable {
+        case started(pid: Int32)
+        case exited(status: Int32, willRestart: Bool, attempt: Int)
+        case stopped
+        case restarting(attempt: Int, delayMillis: UInt64)
+    }
+
+    public typealias LifecycleHandler = @Sendable (LifecycleEvent) async -> Void
+
     private let binaryURL: URL
     private let runtimeDir: URL
     private var process: Process?
-    private var stderrPipe: Pipe?
-    private var stdoutPipe: Pipe?
     private var lastConfiguration: LeafConfiguration?
     private var lastConfigPath: URL?
     private var lastLogPath: URL?
+    /// True when the owner asked us to stop. Distinguishes "intentional shutdown"
+    /// from "crashed / killed externally" so the supervisor knows whether to
+    /// restart.
+    private var stopRequested = false
+    /// Generation counter incremented on every start. Background tasks capture
+    /// the generation at launch and bail out if a newer launch superseded
+    /// them, preventing zombie restart loops.
+    private var generation: UInt64 = 0
+    /// Number of consecutive unexpected exits since the last clean start.
+    /// Used to scale the restart backoff and to surface a "stuck" state.
+    private var consecutiveFailures = 0
+    private var lifecycleHandler: LifecycleHandler?
 
     public init(binaryURL: URL, runtimeDir: URL) {
         self.binaryURL = binaryURL
         self.runtimeDir = runtimeDir
+    }
+
+    public func setLifecycleHandler(_ handler: @escaping LifecycleHandler) {
+        self.lifecycleHandler = handler
     }
 
     public var isRunning: Bool {
@@ -219,13 +246,37 @@ public actor LeafController {
     public var logPath: URL? { lastLogPath }
     public var configuration: LeafConfiguration? { lastConfiguration }
 
-    /// Starts leaf with the given configuration. If leaf is already running,
-    /// throws `.alreadyRunning` — callers should `stop()` first when applying
-    /// a new profile.
+    /// Apply a configuration and ensure leaf is running with it. If leaf is
+    /// already serving an equivalent configuration, this is a no-op. If the
+    /// configuration changed (e.g. the physical interface name flipped after
+    /// a Wi-Fi reconnect), leaf is restarted with the new one.
     public func start(with configuration: LeafConfiguration) async throws {
-        if let process, process.isRunning {
-            throw LeafError.alreadyRunning
+        stopRequested = false
+        if let running = process, running.isRunning, lastConfiguration == configuration {
+            return
         }
+        if let running = process, running.isRunning {
+            await internalStopProcess(running)
+        }
+        try await launch(configuration: configuration, attempt: 0)
+    }
+
+    /// Stop leaf and prevent the supervisor from restarting it.
+    public func stop() async {
+        stopRequested = true
+        generation &+= 1   // invalidate any in-flight watcher's expectations
+        consecutiveFailures = 0
+        if let running = process, running.isRunning {
+            await internalStopProcess(running)
+        }
+        self.process = nil
+        await lifecycleHandler?(.stopped)
+    }
+
+    /// Internal entry point used by both the public start path and the
+    /// supervisor restart path. Always runs serialised on the actor.
+    private func launch(configuration: LeafConfiguration, attempt: Int) async throws {
+        guard !stopRequested else { return }
 
         guard FileManager.default.fileExists(atPath: binaryURL.path) else {
             throw LeafError.binaryNotFound(binaryURL)
@@ -241,69 +292,116 @@ public actor LeafController {
             throw LeafError.writeConfigFailed(error.localizedDescription)
         }
 
-        let process = Process()
-        process.executableURL = binaryURL
+        let newProcess = Process()
+        newProcess.executableURL = binaryURL
         var arguments = ["-c", configURL.path]
         if let bound = configuration.boundInterface, !bound.isEmpty {
             arguments.append(contentsOf: ["-b", bound])
         }
-        process.arguments = arguments
+        newProcess.arguments = arguments
 
-        // Truncate log file so we don't accumulate runs forever; the file is
-        // append-friendly via tee in the script-driven workflow, but for the
-        // host app a clean file per launch is easier to read.
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        // Append (not truncate) the log file so a crash + restart leaves both
+        // runs in the file. The supervisor writes a separator on each respawn
+        // so the boundary is obvious to anyone reading leaf.log later.
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
         let logHandle = try FileHandle(forWritingTo: logURL)
-        process.standardOutput = logHandle
-        process.standardError = logHandle
+        try logHandle.seekToEnd()
+        if attempt > 0 {
+            let banner = "\n----- leaf restart attempt \(attempt) at \(ISO8601DateFormatter().string(from: Date())) -----\n"
+            try logHandle.write(contentsOf: Data(banner.utf8))
+        }
+        newProcess.standardOutput = logHandle
+        newProcess.standardError = logHandle
 
         do {
-            try process.run()
+            try newProcess.run()
         } catch {
             try? logHandle.close()
             throw LeafError.launchFailed(error.localizedDescription)
         }
 
-        self.process = process
+        generation &+= 1
+        let currentGeneration = generation
+        self.process = newProcess
         self.lastConfiguration = configuration
         self.lastConfigPath = configURL
         self.lastLogPath = logURL
-        let pid = process.processIdentifier
-        leafLogger.notice("leaf started pid=\(pid, privacy: .public) config=\(configURL.path, privacy: .public)")
+        let pid = newProcess.processIdentifier
+        if attempt == 0 {
+            consecutiveFailures = 0
+        }
+        leafLogger.notice("leaf started pid=\(pid, privacy: .public) attempt=\(attempt, privacy: .public) config=\(configURL.path, privacy: .public)")
+        await lifecycleHandler?(.started(pid: pid))
 
-        // Detach a watcher so a crash logs once we notice it.
+        // Detach a watcher that waits for process exit, then reports back to
+        // the actor. The watcher captures `currentGeneration`; the actor's
+        // handleExit checks the generation matches before acting on it.
         Task.detached { [weak self] in
-            process.waitUntilExit()
-            let status = process.terminationStatus
-            let reason = process.terminationReason
+            newProcess.waitUntilExit()
+            let status = newProcess.terminationStatus
+            let reason = newProcess.terminationReason
             leafLogger.notice("leaf exited pid=\(pid, privacy: .public) status=\(status, privacy: .public) reason=\(String(describing: reason), privacy: .public)")
-            await self?.handleExit()
+            await self?.handleExit(
+                generation: currentGeneration,
+                status: status,
+                configuration: configuration
+            )
         }
     }
 
-    public func stop() async {
-        guard let process, process.isRunning else {
-            self.process = nil
+    private func handleExit(generation observed: UInt64, status: Int32, configuration: LeafConfiguration) async {
+        // If a newer launch already took over, ignore this watcher.
+        guard observed == self.generation else { return }
+        process = nil
+        if stopRequested {
+            await lifecycleHandler?(.exited(status: status, willRestart: false, attempt: consecutiveFailures))
             return
         }
-        leafLogger.notice("leaf stopping pid=\(process.processIdentifier, privacy: .public)")
-        process.terminate()
-        // Give leaf a moment to flush; if it does not exit within 3s, send SIGKILL.
-        let pid = process.processIdentifier
-        let deadline = Date().addingTimeInterval(3.0)
-        while process.isRunning && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+        consecutiveFailures += 1
+        let attempt = consecutiveFailures
+        // Exponential backoff capped at 5s. The first respawn fires almost
+        // immediately; if leaf keeps crashing we stretch out so we don't
+        // hammer a broken upstream.
+        let delayMillis: UInt64
+        switch attempt {
+        case 1: delayMillis = 200
+        case 2: delayMillis = 400
+        case 3: delayMillis = 800
+        case 4: delayMillis = 1600
+        case 5: delayMillis = 3200
+        default: delayMillis = 5000
         }
-        if process.isRunning {
-            leafLogger.notice("leaf still running after SIGTERM; sending SIGKILL pid=\(pid, privacy: .public)")
-            kill(pid, SIGKILL)
+        await lifecycleHandler?(.exited(status: status, willRestart: true, attempt: attempt))
+        await lifecycleHandler?(.restarting(attempt: attempt, delayMillis: delayMillis))
+        try? await Task.sleep(nanoseconds: delayMillis * 1_000_000)
+        // Re-check: the user may have called stop() during the sleep.
+        guard !stopRequested, observed == self.generation else { return }
+        do {
+            try await launch(configuration: configuration, attempt: attempt)
+        } catch {
+            leafLogger.error("leaf respawn attempt=\(attempt, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // Schedule one more respawn with the same backoff slot rather
+            // than giving up — typical failures here are transient (config
+            // file briefly missing, no IO, etc.).
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !stopRequested else { return }
+            try? await launch(configuration: configuration, attempt: attempt)
         }
-        self.process = nil
     }
 
-    private func handleExit() {
-        if let process, !process.isRunning {
-            self.process = nil
+    private func internalStopProcess(_ running: Process) async {
+        leafLogger.notice("leaf stopping pid=\(running.processIdentifier, privacy: .public)")
+        running.terminate()
+        let pid = running.processIdentifier
+        let deadline = Date().addingTimeInterval(3.0)
+        while running.isRunning && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if running.isRunning {
+            leafLogger.notice("leaf still running after SIGTERM; sending SIGKILL pid=\(pid, privacy: .public)")
+            kill(pid, SIGKILL)
         }
     }
 }
