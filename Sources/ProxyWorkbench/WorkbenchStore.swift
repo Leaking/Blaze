@@ -341,6 +341,7 @@ final class WorkbenchStore: ObservableObject {
         binaryURL: WorkbenchStore.embeddedLeafBinaryURL(),
         runtimeDir: WorkbenchStore.leafRuntimeDir()
     )
+    private var leafLogTailer: LeafLogTailer?
     private var networkPathMonitor: NWPathMonitor?
     private var lastObservedInterface: String?
 
@@ -3001,6 +3002,7 @@ final class WorkbenchStore: ObservableObject {
             socksServerRunning = true
             statusText = "Leaf proxy listening on 127.0.0.1:\(proxyListenPort)/\(socksListenPort) (final=\(configuration.defaultProxy))"
             startProxyEventRefresh()
+            await startLeafLogTailer()
         } catch {
             proxyServerRunning = false
             socksServerRunning = false
@@ -3008,8 +3010,17 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
+    private func startLeafLogTailer() async {
+        guard let logURL = await leafController.logPath else { return }
+        if leafLogTailer == nil {
+            leafLogTailer = LeafLogTailer(logURL: logURL, store: proxyLogStore)
+        }
+        await leafLogTailer?.start()
+    }
+
     private func ensureLeafStopped(reason: String) async {
         await leafController.stop()
+        await leafLogTailer?.stop()
         proxyServerRunning = false
         socksServerRunning = false
         proxyServer = nil
