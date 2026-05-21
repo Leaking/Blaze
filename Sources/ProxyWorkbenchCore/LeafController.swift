@@ -269,44 +269,41 @@ public actor LeafController {
         try await launch(configuration: configuration, attempt: 0)
     }
 
-    /// Send SIGTERM (then SIGKILL after 1s) to any process whose executable
-    /// path matches our own leaf binary URL. Defensive cleanup for the
-    /// "host app died, leaf stayed alive" scenario.
+    /// Send SIGTERM (then SIGKILL) to any orphan leaf process from a previous
+    /// app run. Uses pkill rather than ps+parse because the latter deadlocks
+    /// when ps output exceeds the pipe buffer (which it routinely does on a
+    /// busy macOS box with 500+ processes).
     private func terminateOrphanLeafProcesses() {
+        let path = binaryURL.standardizedFileURL.path
+        let exitCode = runPkill(signal: "-TERM", pattern: path)
+        guard exitCode == 0 else {
+            // Exit 1 means "no matching process", which is the common case.
+            return
+        }
+        leafLogger.notice("orphan leaf cleanup: SIGTERM sent to \(path, privacy: .public)")
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = runPkill(signal: "-KILL", pattern: path)
+    }
+
+    private func runPkill(signal: String, pattern: String) -> Int32 {
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/ps")
-        task.arguments = ["-axo", "pid=,comm="]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = [signal, "-f", pattern]
+        // Inherit /dev/null for stdout/stderr to avoid any pipe overhead;
+        // pkill returns its result via exit status.
+        let devNullR = FileHandle(forReadingAtPath: "/dev/null")
+        let devNullW = FileHandle(forWritingAtPath: "/dev/null")
+        if let devNullR { task.standardInput = devNullR }
+        if let devNullW {
+            task.standardOutput = devNullW
+            task.standardError = devNullW
+        }
         do {
             try task.run()
             task.waitUntilExit()
+            return task.terminationStatus
         } catch {
-            return
-        }
-        guard let data = try? pipe.fileHandleForReading.readToEnd(),
-              let output = String(data: data, encoding: .utf8) else {
-            return
-        }
-        let myPath = binaryURL.standardizedFileURL.path
-        var killed: [Int32] = []
-        for line in output.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let firstSpace = trimmed.firstIndex(of: " ") else { continue }
-            let pidString = String(trimmed[..<firstSpace])
-            let command = String(trimmed[trimmed.index(after: firstSpace)...]).trimmingCharacters(in: .whitespaces)
-            guard command == myPath, let pid = Int32(pidString), pid != getpid() else { continue }
-            kill(pid, SIGTERM)
-            killed.append(pid)
-        }
-        guard !killed.isEmpty else { return }
-        let pidsString = killed.map(String.init).joined(separator: ",")
-        leafLogger.notice("orphan leaf cleanup pids=\(pidsString, privacy: .public)")
-        // Give them 1s to exit cleanly, then SIGKILL holdouts.
-        Thread.sleep(forTimeInterval: 1.0)
-        for pid in killed {
-            kill(pid, SIGKILL)
+            return -1
         }
     }
 
