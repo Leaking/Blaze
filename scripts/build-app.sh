@@ -239,6 +239,14 @@ else
     chmod +x "$RESOURCES_DIR/leaf"
 fi
 
+# Bundle notify-resume.sh so the in-app watchdog recovery path can ping
+# the user on Telegram when it kicks in (the external watchdog used in
+# test scripts can call the repo path directly).
+if [[ -f "$ROOT_DIR/scripts/dev/notify-resume.sh" ]]; then
+    cp "$ROOT_DIR/scripts/dev/notify-resume.sh" "$RESOURCES_DIR/notify-resume.sh"
+    chmod +x "$RESOURCES_DIR/notify-resume.sh"
+fi
+
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string blaze" "$CONTENTS_DIR/Info.plist"

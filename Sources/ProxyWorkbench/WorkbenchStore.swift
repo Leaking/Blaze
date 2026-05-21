@@ -1435,6 +1435,7 @@ final class WorkbenchStore: ObservableObject {
         stopStartupWatchdog(markCompleted: false)
         startupWatchdogText = "Recovering: \(reason)"
         await writeStartupWatchdogRecord(reason: reason, phase: "begin")
+        notifyUserOfRecovery(reason: reason)
         setStartupStep(
             7,
             status: .failed,
@@ -1467,6 +1468,35 @@ final class WorkbenchStore: ObservableObject {
             ? "Startup watchdog recovered network state; Blaze VPN stopped and Surge restore attempted"
             : "Startup watchdog stopped Blaze VPN, but Surge did not return to its previous VPN state"
         scheduleTerminationAfterWatchdogRecovery()
+    }
+
+    /// Fire-and-forget Telegram notification when the in-app watchdog
+    /// kicks in. Looks for notify-resume.sh in the bundle's Resources/
+    /// (build-app.sh copies it there); silently skips if missing or the
+    /// telegram channel isn't configured.
+    private func notifyUserOfRecovery(reason: String) {
+        guard let scriptURL = Bundle.main.url(forResource: "notify-resume", withExtension: "sh") else {
+            return
+        }
+        let message = "Blaze 自检 watchdog 触发：\(reason)。Surge 应已恢复，回复\"继续\"让 Claude 接着跑。"
+        Task.detached(priority: .utility) {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/bash")
+            task.arguments = [scriptURL.path, message]
+            // Discard the script's diagnostic output; the watchdog already
+            // recorded the state we care about.
+            let devNull = FileHandle(forWritingAtPath: "/dev/null")
+            if let devNull {
+                task.standardOutput = devNull
+                task.standardError = devNull
+            }
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                // Notification is best-effort; never let it fail recovery.
+            }
+        }
     }
 
     private func scheduleTerminationAfterWatchdogRecovery() {
