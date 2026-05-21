@@ -202,7 +202,21 @@ Record every self-test cycle here before and after validation. Include the build
 - Build 58 result: **Step 7 PASSED**. 25/25 connectivity probes completed; recovery cleanly restored Surge ("Step 8 Passed: Restarted Surge: com.nssurge.surge-mac; VPN connected"). Three clean Step 7 passes in a row now: 55 (26s), 56 (24s), 58.
 - Lesson recorded for future cycles: any subprocess invocation that captures stdout/stderr must read concurrently with the process running, OR use small/empty output, OR redirect to `/dev/null` / a file. Never `task.waitUntilExit() → pipe.readToEnd()` for processes that can produce more than a few KB.
 
-## Loop infrastructure delivered in this session (Builds 47→58)
+## 2026-05-21 04:20 Asia/Shanghai - Build 60 (Step 5 timing race) / Build 61 (polling fix)
+
+- Build 60 failed Step 5 with `Startup workflow stopped at step 5`. macOS unified log showed the tunnel actually started cleanly ("Blaze packet tunnel forwarding started" at +129ms after startTunnel) but was torn down 250ms later by the recovery's stopPacketTunnel. The cause: `startPacketTunnel` waited a single 1s sleep then checked `packetTunnelConnected`. macOS's NEVPNStatus had not propagated to .connected yet, status was still .transitioning, Step 5 returned `.actionNeeded` → workflow stopped → recovery sent the Stop. Builds 55/56/58/59 had won this race; build 60 lost it.
+- Fix (Build 61): `startPacketTunnel` now polls `packetTunnelConnected` every 200ms for up to 8s, breaking early on a failure-text. Total wall-clock on the happy path is 200-400ms (same as before), but slow paths get the extra headroom.
+- Build 61 result: **Step 7 PASSED** (25/25 checks at 04:38:20). Watchdog fired naturally at 5 min, recovery cleanly restored Surge. Five Step 7 passes total now: 55, 56, 58, 59, 61.
+
+## 2026-05-21 04:43 Asia/Shanghai - Watchdog → Telegram notification
+
+- Triggering evidence: user feedback that the recovery loop fails to wake Claude Code after disconnects. Direct injection into a `claude` CLI session is not possible from outside; the Telegram MCP plugin is the only realistic channel.
+- `scripts/dev/notify-resume.sh`: reads `TELEGRAM_BOT_TOKEN` from `~/.claude/channels/telegram/.env` and the recipient chat_id from `access.json`; POSTs `/sendMessage`. Tolerant of missing config (exits 0). Verified end-to-end by delivering a real message to chat_id 94984185.
+- External watchdog template in `references/self-test-cycle.md` updated to call the script.
+- In-app watchdog also wired: `WorkbenchStore.recoverFromStartupWatchdog` shells out to the bundled `Contents/Resources/notify-resume.sh` so any recovery — automation URL, external script, or the 5-min in-app timer — produces a Telegram ping. `scripts/build-app.sh` copies the script into the bundle.
+- Build 62 packaging blocked: notarytool keychain profile `blaze-notary` was evicted (login keychain timed out after many hours of session activity). User intervention needed: unlock the login keychain OR re-run `xcrun notarytool store-credentials blaze-notary ...`. Telegram alert sent.
+
+## Loop infrastructure delivered in this session (Builds 47→62)
 
 - End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
 - `setStartupStep` writes a `STARTUP` event for every status transition (including running→running detail changes after the latest tweak) → `proxy-events.log` now contains a complete timeline per workflow run.
