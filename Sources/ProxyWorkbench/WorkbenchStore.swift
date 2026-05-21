@@ -1139,8 +1139,20 @@ final class WorkbenchStore: ObservableObject {
             )
             await refreshPacketTunnelConfiguration(updateStatusText: false)
             try await PacketTunnelConfigurationManager.startTunnel()
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            // Poll for up to 8s for the tunnel to reach .connected. A single
+            // 1s sleep was racy: Build 55-59 happened to win the race but
+            // Build 60 didn't, and Step 5 fell into .transitioning → workflow
+            // stopped. macOS NEVPNStatus typically flips in 200-1500ms but
+            // can be slower under load.
+            let pollDeadline = Date().addingTimeInterval(8.0)
             await refreshPacketTunnelStatus(updateStatusText: false)
+            while !packetTunnelConnected && Date() < pollDeadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                await refreshPacketTunnelStatus(updateStatusText: false)
+                if packetTunnelStatusText.localizedCaseInsensitiveContains("failed") {
+                    break
+                }
+            }
             if packetTunnelConnected {
                 packetTunnelStatusText = "Packet tunnel connected; excluding \(excludedIPv4Addresses.count) upstream IPs"
             } else {
