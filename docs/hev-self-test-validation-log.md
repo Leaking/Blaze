@@ -193,7 +193,16 @@ Record every self-test cycle here before and after validation. Include the build
 - Remaining risk: health probe for "process alive but socket unresponsive" not yet implemented; supervisor only reacts when the process exits. Acceptable for now since the failure modes we observed are exit-based, not deadlock-based.
 - Next decision: ship build 56. Future work: TCP probe-based health check; per-connection event logging from leaf into `proxy-events.log` for parity with the deleted Swift listener.
 
-## Loop infrastructure delivered in this session (Builds 47→56)
+## 2026-05-21 03:43 Asia/Shanghai - Build 57 (regression + diagnosis) / Build 58 (recovery)
+
+- Commits: `e59579f` (health probe) introduced an orphan-cleanup regression; `76611da` fixed it.
+- Build 57 result: **Step 3 hung indefinitely**. Workflow logged `Step 3 Running: Starting local HTTP and SOCKS5 listeners` at 19:27:30 then went silent until the external watchdog fired at 19:32:26. No `com.chenhuazhao.blaze:Leaf` `leaf started` notice — leaf never even launched.
+- Root cause: `terminateOrphanLeafProcesses()` ran `/bin/ps -axo pid=,comm=`, redirected to a `Pipe`, and only read the pipe AFTER `task.waitUntilExit()`. On a busy macOS box (≈500+ processes), ps output exceeded the pipe's kernel buffer; ps blocked on write waiting for the reader, `waitUntilExit` blocked waiting for ps to exit, classic pipe-deadlock. The `LeafController` actor was stuck inside `start()` for the duration.
+- Fix (Build 58): Replaced ps+parse with `/usr/bin/pkill -TERM -f <binaryPath>` followed by `sleep 1` + `pkill -KILL -f <binaryPath>`. pkill returns its result via exit status; stdout/stderr are redirected to `/dev/null` so there is no pipe to overflow.
+- Build 58 result: **Step 7 PASSED**. 25/25 connectivity probes completed; recovery cleanly restored Surge ("Step 8 Passed: Restarted Surge: com.nssurge.surge-mac; VPN connected"). Three clean Step 7 passes in a row now: 55 (26s), 56 (24s), 58.
+- Lesson recorded for future cycles: any subprocess invocation that captures stdout/stderr must read concurrently with the process running, OR use small/empty output, OR redirect to `/dev/null` / a file. Never `task.waitUntilExit() → pipe.readToEnd()` for processes that can produce more than a few KB.
+
+## Loop infrastructure delivered in this session (Builds 47→58)
 
 - End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
 - `setStartupStep` writes a `STARTUP` event for every status transition (including running→running detail changes after the latest tweak) → `proxy-events.log` now contains a complete timeline per workflow run.
