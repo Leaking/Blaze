@@ -335,8 +335,6 @@ final class WorkbenchStore: ObservableObject {
     private let probe = LatencyProbe()
     private let systemExtensionController = SystemExtensionController()
     private var proxyLogStore = ProxyEventStore(diskLogURL: ProxyEventStore.defaultDiskLogURL())
-    private var proxyServer: LocalHTTPProxyServer?
-    private var socksServer: LocalSOCKS5ProxyServer?
     private let leafController = LeafController(
         binaryURL: WorkbenchStore.embeddedLeafBinaryURL(),
         runtimeDir: WorkbenchStore.leafRuntimeDir()
@@ -3023,8 +3021,6 @@ final class WorkbenchStore: ObservableObject {
         await leafLogTailer?.stop()
         proxyServerRunning = false
         socksServerRunning = false
-        proxyServer = nil
-        socksServer = nil
         await refreshProxyEvents()
         statusText = "Leaf proxy stopped (\(reason))"
         proxyRefreshTask?.cancel()
