@@ -181,6 +181,7 @@ WATCHDOG_LOG="$RUN_DIR/external-watchdog.log"
     "$PWD/scripts/dev/surge-control.sh" ensure-on >> "$WATCHDOG_LOG" 2>&1 || true
     scutil --nc list | rg "Surge|blaze" >> "$WATCHDOG_LOG" 2>&1 || true
     systemextensionsctl list >> "$WATCHDOG_LOG" 2>&1 || true
+    "$PWD/scripts/dev/notify-resume.sh" "Blaze watchdog fired (run ${RUN_ID}); Surge restored. 回复 \"继续\" 让 Claude 接着跑 self-test loop。" >> "$WATCHDOG_LOG" 2>&1 || true
   fi
 ) &
 printf '%s\n' "$!" > "$RUN_DIR/watchdog.pid"
