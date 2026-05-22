@@ -3082,8 +3082,42 @@ final class WorkbenchStore: ObservableObject {
             proxies.append(mapped)
         }
 
+        let routingProfile = activeRoutingProfile()
+        let selections = selectedPolicies
+        let groups = profile.groups
         let finalPolicy = effectiveLeafFinalPolicy(in: seenTags)
-        let rules: [LeafConfiguration.Rule] = [.final(finalPolicy)]
+
+        func resolvePolicy(_ policy: String) -> String? {
+            let upper = policy.uppercased()
+            if upper == "DIRECT" || upper == "REJECT" || upper.hasPrefix("REJECT-") {
+                return upper.hasPrefix("REJECT") ? "REJECT" : "DIRECT"
+            }
+            if seenTags.contains(policy) { return policy }
+            // Group → follow selection until we land on a configured proxy.
+            var visited: Set<String> = []
+            var current = policy
+            while let group = groups.first(where: { $0.name == current }) {
+                if visited.contains(current) { return nil }
+                visited.insert(current)
+                guard let next = selections[current] ?? group.policies.first else { return nil }
+                if seenTags.contains(next) { return next }
+                current = next
+            }
+            return seenTags.contains(current) ? current : nil
+        }
+
+        var rules: [LeafConfiguration.Rule] = []
+        for rule in routingProfile.rules {
+            if let leafRule = LeafConfiguration.leafRule(from: rule, resolve: resolvePolicy) {
+                rules.append(leafRule)
+                if leafRule.kind == "FINAL" {
+                    break
+                }
+            }
+        }
+        if !rules.contains(where: { $0.kind == "FINAL" }) {
+            rules.append(.final(finalPolicy))
+        }
 
         return LeafConfiguration(
             httpPort: proxyListenPort,
@@ -3096,6 +3130,7 @@ final class WorkbenchStore: ObservableObject {
             defaultProxy: finalPolicy
         )
     }
+
 
     private func effectiveLeafFinalPolicy(in availableTags: Set<String>) -> String {
         // Prefer the user-selected global proxy when it maps to a leaf proxy

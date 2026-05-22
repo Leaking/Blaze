@@ -85,6 +85,39 @@ public struct LeafConfiguration: Sendable, Hashable {
         }
     }
 
+    /// Translate a Blaze `ProxyRule` (the format Blaze parses from the user's
+    /// Surge-style profile) into the closest leaf rule. Returns nil for kinds
+    /// leaf does not support (DOMAIN-WILDCARD, URL-REGEX, USER-AGENT,
+    /// PROCESS-NAME, raw RULE-SET, etc.) so the caller can skip them.
+    ///
+    /// `resolve` maps the Blaze rule's policy name (which may be a group)
+    /// into a tag that exists in this configuration's `proxies`. Return nil
+    /// from resolve to drop the rule entirely.
+    public static func leafRule(
+        from rule: ProxyRule,
+        resolve: (String) -> String?
+    ) -> Rule? {
+        guard let target = resolve(rule.policy) else { return nil }
+        switch rule.type.uppercased() {
+        case "DOMAIN":
+            return Rule(kind: "DOMAIN", value: rule.value, target: target)
+        case "DOMAIN-SUFFIX":
+            return Rule(kind: "DOMAIN-SUFFIX", value: rule.value, target: target)
+        case "DOMAIN-KEYWORD":
+            return Rule(kind: "DOMAIN-KEYWORD", value: rule.value, target: target)
+        case "IP-CIDR", "IP-CIDR6":
+            return Rule(kind: "IP-CIDR", value: rule.value, target: target)
+        case "GEOIP":
+            return Rule(kind: "GEOIP", value: rule.value, target: target)
+        case "DEST-PORT":
+            return Rule(kind: "PORT-RANGE", value: rule.value, target: target)
+        case "FINAL", "MATCH":
+            return Rule.final(target)
+        default:
+            return nil
+        }
+    }
+
     public init(
         httpPort: Int,
         socksPort: Int,

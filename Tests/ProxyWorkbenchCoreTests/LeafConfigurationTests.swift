@@ -105,6 +105,92 @@ final class LeafConfigurationTests: XCTestCase {
         XCTAssertEqual(a, b)
     }
 
+    // MARK: - Rule translation
+
+    private func makeRule(_ type: String, _ value: String, _ policy: String) -> ProxyRule {
+        ProxyRule(type: type, value: value, policy: policy, options: [], sourceLine: 1, rawLine: "")
+    }
+
+    private let identityResolve: (String) -> String? = { name in
+        if name == "DIRECT" || name == "REJECT" { return name }
+        if name == "HK10" { return "HK10" }
+        return nil
+    }
+
+    func testTranslatesDomainSuffix() {
+        let rule = LeafConfiguration.leafRule(
+            from: makeRule("DOMAIN-SUFFIX", "google.com", "HK10"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(rule?.kind, "DOMAIN-SUFFIX")
+        XCTAssertEqual(rule?.value, "google.com")
+        XCTAssertEqual(rule?.target, "HK10")
+    }
+
+    func testTranslatesDomain() {
+        let rule = LeafConfiguration.leafRule(
+            from: makeRule("DOMAIN", "www.example.com", "DIRECT"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(rule?.kind, "DOMAIN")
+        XCTAssertEqual(rule?.target, "DIRECT")
+    }
+
+    func testTranslatesIPCIDR6ToIPCIDR() {
+        let rule = LeafConfiguration.leafRule(
+            from: makeRule("IP-CIDR6", "fe80::/10", "DIRECT"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(rule?.kind, "IP-CIDR")
+        XCTAssertEqual(rule?.value, "fe80::/10")
+    }
+
+    func testTranslatesDestPortToPortRange() {
+        let rule = LeafConfiguration.leafRule(
+            from: makeRule("DEST-PORT", "80", "DIRECT"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(rule?.kind, "PORT-RANGE")
+        XCTAssertEqual(rule?.value, "80")
+    }
+
+    func testTranslatesFinalAndMatch() {
+        let final = LeafConfiguration.leafRule(
+            from: makeRule("FINAL", "", "HK10"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(final?.kind, "FINAL")
+        XCTAssertEqual(final?.target, "HK10")
+        let match = LeafConfiguration.leafRule(
+            from: makeRule("MATCH", "", "DIRECT"),
+            resolve: identityResolve
+        )
+        XCTAssertEqual(match?.kind, "FINAL")
+    }
+
+    func testDropsUnsupportedKinds() {
+        XCTAssertNil(LeafConfiguration.leafRule(
+            from: makeRule("URL-REGEX", "^https://example.*", "DIRECT"),
+            resolve: identityResolve
+        ))
+        XCTAssertNil(LeafConfiguration.leafRule(
+            from: makeRule("DOMAIN-WILDCARD", "*.example.com", "DIRECT"),
+            resolve: identityResolve
+        ))
+        XCTAssertNil(LeafConfiguration.leafRule(
+            from: makeRule("USER-AGENT", "Chrome/*", "DIRECT"),
+            resolve: identityResolve
+        ))
+    }
+
+    func testDropsRuleWithUnresolvablePolicy() {
+        // resolve returns nil for "MissingGroup", rule should be dropped.
+        XCTAssertNil(LeafConfiguration.leafRule(
+            from: makeRule("DOMAIN", "example.com", "MissingGroup"),
+            resolve: identityResolve
+        ))
+    }
+
     func testWsAndWsPathRender() {
         let proxy = LeafConfiguration.Proxy(
             tag: "T",
