@@ -978,6 +978,715 @@
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: rgba(140, 140, 140, 0.4); border-radius: 6px; }
 
+  /* =========================================================================
+     SHARED — filter bar / form row / table row patterns reused across tabs
+     ---------------------------------------------------------------------- */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .window.dark .filter-bar { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .filter-bar .group { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: 6px; background: var(--bg-tile); box-shadow: var(--hairline); }
+  .filter-bar .pill { padding: 3px 9px; font-size: 11.5px; border-radius: 4px; color: var(--text-secondary); cursor: pointer; font-weight: 500; }
+  .filter-bar .pill.active { background: var(--bg-window); color: var(--text-primary); box-shadow: var(--hairline), 0 1px 1px rgba(0,0,0,0.05); }
+  .window.dark .filter-bar .pill.active { background: var(--bg-card-elevated); }
+  .filter-bar .divider { width: 0.5px; height: 18px; background: var(--border); margin: 0 4px; }
+  .filter-bar .input {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    min-width: 200px;
+  }
+  .filter-bar .input svg { width: 11px; height: 11px; opacity: 0.7; }
+  .filter-bar .spacer { flex: 1; }
+  .filter-bar .small-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .filter-bar .small-btn:hover { background: var(--hover); }
+  .filter-bar .small-btn svg { width: 11px; height: 11px; }
+  .filter-bar .small-btn.accent { color: var(--accent); }
+
+  /* =========================================================================
+     TRAFFIC tab
+     ---------------------------------------------------------------------- */
+  .traffic-stats {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+  }
+  .traffic-stats .cell {
+    background: var(--bg-card);
+    border-radius: 8px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 10px 14px 12px;
+  }
+  .window.dark .traffic-stats .cell { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .traffic-stats .lbl { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.10em; text-transform: uppercase; font-weight: 600; }
+  .traffic-stats .val { font-size: 18px; font-weight: 600; letter-spacing: -0.015em; margin-top: 4px; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+  .traffic-stats .delta { font-size: 10.5px; color: var(--positive); margin-top: 2px; font-family: var(--font-mono); }
+  .traffic-stats .delta.neg { color: var(--danger); }
+  .traffic-stats .cell.danger .val { color: var(--danger); }
+
+  .traffic-layout {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 14px;
+  }
+  .traffic-table {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden;
+  }
+  .window.dark .traffic-table { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .traffic-table .head {
+    display: grid;
+    grid-template-columns: 60px 1fr 80px 100px 80px 70px 18px;
+    gap: 10px;
+    padding: 8px 14px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .traffic-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 80px 100px 80px 70px 18px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 14px;
+    font-size: 12px;
+    border-bottom: 0.5px solid var(--row-divider);
+  }
+  .traffic-row:last-child { border-bottom: none; }
+  .traffic-row:hover { background: var(--hover); }
+  .traffic-row .ts { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+  .traffic-row .host { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .traffic-row .host .scheme { color: var(--text-tertiary); }
+  .traffic-row .policy { padding: 1px 7px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 600; text-align: center; }
+  .traffic-row .rule { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .traffic-row .bytes { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; text-align: right; }
+  .traffic-row .bytes b { color: var(--text-primary); font-weight: 500; }
+  .traffic-row .status-cell { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-secondary); }
+  .traffic-row .status-cell .d { width: 7px; height: 7px; border-radius: 50%; }
+  .traffic-row .status-cell .d.ok { background: var(--positive); }
+  .traffic-row .status-cell .d.warn { background: var(--warning); }
+  .traffic-row .status-cell .d.err { background: var(--danger); }
+  .traffic-row .chev { color: var(--text-tertiary); }
+  .traffic-row.selected { background: var(--selected-active); }
+  .traffic-row.selected .policy { background: var(--accent); color: #FFFFFF; }
+
+  .traffic-side {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .donut-card {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 14px;
+  }
+  .window.dark .donut-card { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .donut-card .ttl { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .donut-wrap { display: flex; align-items: center; gap: 14px; }
+  .donut-wrap svg { width: 92px; height: 92px; flex-shrink: 0; }
+  .donut-legend { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+  .donut-legend .item { display: inline-flex; align-items: center; gap: 7px; }
+  .donut-legend .swatch { width: 9px; height: 9px; border-radius: 2px; }
+  .donut-legend .name { color: var(--text-primary); font-weight: 500; }
+  .donut-legend .pct { color: var(--text-tertiary); font-family: var(--font-mono); margin-left: auto; font-size: 10.5px; }
+
+  .top-hosts .row {
+    display: grid;
+    grid-template-columns: 1fr 50px;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 0.5px solid var(--row-divider);
+    font-size: 11.5px;
+  }
+  .top-hosts .row:last-child { border-bottom: none; }
+  .top-hosts .row .h { font-family: var(--font-mono); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+  .top-hosts .row .n { text-align: right; font-family: var(--font-mono); color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  /* =========================================================================
+     POLICIES tab
+     ---------------------------------------------------------------------- */
+  .policy-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .policy-card {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+    cursor: pointer;
+  }
+  .window.dark .policy-card { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .policy-card.current {
+    box-shadow: 0 0 0 1.5px var(--accent), 0 1px 2px rgba(0,0,0,0.04), 0 6px 18px rgba(0,122,255,0.10);
+  }
+  .window.dark .policy-card.current {
+    box-shadow: 0 0 0 1.5px var(--accent), 0 1px 2px rgba(0,0,0,0.35), 0 6px 18px rgba(10,132,255,0.16);
+  }
+  .policy-card .top { display: flex; align-items: center; gap: 10px; }
+  .policy-card .flag { font-size: 22px; line-height: 1; }
+  .policy-card .name-block { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+  .policy-card .name-block .nm { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .policy-card .name-block .proto { font-size: 10.5px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .policy-card .more { margin-left: auto; color: var(--text-tertiary); cursor: pointer; padding: 2px 4px; border-radius: 4px; font-size: 14px; line-height: 1; }
+  .policy-card .more:hover { background: var(--hover); }
+  .policy-card .lat {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-family: var(--font-mono);
+  }
+  .policy-card .lat .big { font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
+  .policy-card .lat.warn .big { color: var(--warning); }
+  .policy-card .lat.danger .big { color: var(--danger); }
+  .policy-card .lat.timeout .big { color: var(--danger); font-size: 14px; }
+  .policy-card .lat .u { font-size: 11px; color: var(--text-tertiary); }
+  .policy-card .lat .pulse-spark {
+    margin-left: auto;
+    width: 60px;
+    height: 18px;
+  }
+  .policy-card .footrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    border-top: 0.5px solid var(--row-divider);
+    padding-top: 8px;
+  }
+  .policy-card .footrow .l { display: inline-flex; align-items: center; gap: 6px; }
+  .policy-card .footrow .l .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--positive); }
+  .policy-card .badge {
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  /* Groups panel */
+  .groups-panel {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 12px 14px 14px;
+  }
+  .window.dark .groups-panel { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .group-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 4px;
+    border-bottom: 0.5px solid var(--row-divider);
+    font-size: 12.5px;
+  }
+  .group-row:last-child { border-bottom: none; }
+  .group-row .name { font-weight: 500; }
+  .group-row .kind { font-size: 10.5px; color: var(--text-tertiary); font-family: var(--font-mono); margin-left: 8px; }
+  .group-row .pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .group-row .pick svg { width: 9px; height: 9px; color: var(--text-tertiary); }
+
+  /* =========================================================================
+     RULES tab
+     ---------------------------------------------------------------------- */
+  .rules-layout {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 14px;
+  }
+  .rules-list-panel {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden;
+    max-height: 460px;
+    display: flex;
+    flex-direction: column;
+  }
+  .window.dark .rules-list-panel { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .rule-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 110px 18px;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 14px;
+    font-size: 12px;
+    border-bottom: 0.5px solid var(--row-divider);
+  }
+  .rule-row:last-child { border-bottom: none; }
+  .rule-row:hover { background: var(--hover); }
+  .rule-row .kind {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: var(--font-mono);
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--bg-tile);
+    color: var(--text-secondary);
+    text-align: center;
+  }
+  .rule-row .kind.domain { background: rgba(0,122,255,0.12); color: var(--accent); }
+  .window.dark .rule-row .kind.domain { background: rgba(10,132,255,0.20); }
+  .rule-row .kind.ip { background: rgba(52,199,89,0.16); color: var(--positive); }
+  .rule-row .kind.geoip { background: rgba(255,149,0,0.16); color: var(--warning); }
+  .rule-row .kind.port { background: rgba(175,82,222,0.15); color: #AF52DE; }
+  .window.dark .rule-row .kind.port { color: #BF5AF2; }
+  .rule-row .kind.final { background: var(--bg-tile-strong); color: var(--text-secondary); }
+  .rule-row .value { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rule-row .arrow { color: var(--text-tertiary); margin: 0 4px; font-family: var(--font-mono); }
+  .rule-row .target {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    background: var(--accent-soft);
+    color: var(--accent);
+    justify-self: end;
+  }
+  .rule-row .target.direct { background: var(--bg-tile); color: var(--text-secondary); }
+  .rule-row .target.reject { background: var(--danger-soft); color: var(--danger); }
+  .rule-row .chev { color: var(--text-tertiary); }
+
+  .rule-source-bar {
+    padding: 8px 14px;
+    border-bottom: 0.5px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .rule-source-bar .chip-source {
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-secondary);
+  }
+
+  .rules-tester {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .window.dark .rules-tester { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .rules-tester .lab { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.10em; text-transform: uppercase; font-weight: 600; }
+  .rules-tester .test-input {
+    display: flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+    gap: 8px;
+  }
+  .rules-tester .test-input .cursor { width: 1.5px; height: 13px; background: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { to { opacity: 0; } }
+  .rules-tester .matched {
+    background: var(--bg-tile);
+    border-radius: 8px;
+    padding: 12px;
+    border: 0.5px solid var(--accent-soft);
+    font-size: 11.5px;
+  }
+  .window.dark .rules-tester .matched { border-color: var(--accent-strong); }
+  .rules-tester .matched .head {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rules-tester .matched .head .d { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .rules-tester .matched .line { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 11.5px; }
+  .rules-tester .step-row { display: grid; grid-template-columns: 14px 1fr; gap: 8px; font-size: 11.5px; color: var(--text-secondary); padding: 3px 0; }
+  .rules-tester .step-row .ind { color: var(--text-tertiary); font-family: var(--font-mono); }
+  .rules-tester .step-row.match { color: var(--text-primary); font-weight: 500; }
+  .rules-tester .step-row.match .ind { color: var(--accent); }
+
+  /* =========================================================================
+     DIAGNOSTICS tab
+     ---------------------------------------------------------------------- */
+  .diag-layout {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .step-timeline {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 14px 16px;
+  }
+  .window.dark .step-timeline { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .step-timeline .panel-head { padding: 0; margin-bottom: 10px; }
+  .timeline-step {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 12px;
+    padding: 6px 0;
+    position: relative;
+  }
+  .timeline-step:not(:last-child)::before {
+    content: "";
+    position: absolute;
+    left: 10.5px;
+    top: 24px;
+    bottom: -2px;
+    width: 1px;
+    background: var(--border-strong);
+  }
+  .timeline-step .marker {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--positive);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 600;
+    box-shadow: 0 0 0 0.5px rgba(0,0,0,0.06), 0 1px 2px rgba(52,199,89,0.3);
+    z-index: 2;
+  }
+  .timeline-step .marker.run { background: var(--accent); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.06), 0 0 0 4px rgba(0,122,255,0.18); animation: pulse 1.6s infinite ease-in-out; }
+  .timeline-step .marker.pending { background: var(--bg-tile-strong); color: var(--text-tertiary); box-shadow: var(--hairline); }
+  .timeline-step .marker.fail { background: var(--danger); }
+  .timeline-step .step-body { padding-top: 2px; }
+  .timeline-step .step-body .nm {
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .timeline-step .step-body .nm .ts {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    font-weight: 400;
+    margin-left: auto;
+  }
+  .timeline-step .step-body .det {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+    font-family: var(--font-mono);
+    line-height: 1.45;
+  }
+  .timeline-step.pending .step-body .nm { color: var(--text-tertiary); }
+  .timeline-step .actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 5px;
+  }
+  .timeline-step .actions .link {
+    font-size: 10.5px;
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  .diag-right {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .counter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .counter-card {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 10px 12px 12px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .window.dark .counter-card { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .counter-card .k { font-size: 9.5px; color: var(--text-tertiary); letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; }
+  .counter-card .v { font-size: 17px; font-weight: 600; letter-spacing: -0.015em; margin-top: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .counter-card .v.ok { color: var(--positive); }
+  .counter-card .v.warn { color: var(--warning); }
+  .counter-card .v.err { color: var(--danger); }
+  .counter-card .sub { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; font-family: var(--font-mono); }
+
+  .log-tail {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden;
+  }
+  .window.dark .log-tail { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .log-line {
+    display: grid;
+    grid-template-columns: 80px 65px 1fr;
+    gap: 12px;
+    padding: 5px 14px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    border-bottom: 0.5px solid var(--row-divider);
+    color: var(--text-secondary);
+  }
+  .log-line:last-child { border-bottom: none; }
+  .log-line .ts { color: var(--text-tertiary); font-size: 10px; }
+  .log-line .level {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-align: center;
+    border-radius: 3px;
+    padding: 1px 4px;
+    letter-spacing: 0.04em;
+  }
+  .log-line .level.info { background: var(--bg-tile); color: var(--text-secondary); }
+  .log-line .level.passed { background: var(--positive-soft); color: var(--positive); }
+  .log-line .level.failed { background: var(--danger-soft); color: var(--danger); }
+  .log-line .level.warn { background: var(--warning-soft); color: var(--warning); }
+  .log-line .msg { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-line .msg .k { color: var(--text-tertiary); }
+
+  /* DNS / tunnel mini card */
+  .mini-mode {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 12px 14px;
+  }
+  .window.dark .mini-mode { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .mini-mode .ttl { font-size: 12.5px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .mini-mode .ttl .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--positive); }
+  .mini-mode .kv-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; font-size: 11.5px; padding: 3px 0; }
+  .mini-mode .kv-row .k { color: var(--text-secondary); }
+  .mini-mode .kv-row .v { font-family: var(--font-mono); color: var(--text-primary); font-size: 11px; }
+
+  /* =========================================================================
+     SETTINGS tab
+     ---------------------------------------------------------------------- */
+  .settings-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 18px;
+    align-items: start;
+  }
+  .settings-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0;
+  }
+  .settings-nav .sn-item {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .settings-nav .sn-item.active {
+    background: var(--selected);
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .settings-nav .sn-item svg { width: 14px; height: 14px; opacity: 0.8; }
+  .settings-section {
+    background: var(--bg-card);
+    border-radius: 10px;
+    box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.04);
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .window.dark .settings-section { box-shadow: var(--hairline), 0 1px 2px rgba(0,0,0,0.35); }
+  .settings-section .sec-head {
+    padding: 14px 18px 4px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .settings-section .sec-desc {
+    padding: 0 18px 12px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+  .form-row {
+    display: grid;
+    grid-template-columns: 160px 1fr auto;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 18px;
+    border-top: 0.5px solid var(--row-divider);
+    font-size: 12.5px;
+  }
+  .form-row.full { grid-template-columns: 160px 1fr; }
+  .form-row .label { color: var(--text-primary); }
+  .form-row .label .hint { display: block; font-size: 10.5px; color: var(--text-tertiary); margin-top: 2px; }
+  .form-row .control { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .form-input {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    min-width: 80px;
+  }
+  .form-input.wide { min-width: 280px; }
+  .form-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 8px 0 12px;
+    border-radius: 6px;
+    background: var(--bg-tile);
+    box-shadow: var(--hairline);
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .form-select svg { width: 10px; height: 10px; opacity: 0.6; }
+  .form-toggle {
+    width: 36px;
+    height: 22px;
+    border-radius: 11px;
+    background: var(--positive);
+    box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.3), 0 1px 2px rgba(0,0,0,0.18);
+    position: relative;
+    cursor: pointer;
+  }
+  .form-toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: calc(100% - 20px);
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #FFFFFF;
+    box-shadow: 0 0 0 0.5px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.18);
+    transition: left 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .form-toggle.off { background: var(--bg-tile-strong); }
+  .form-toggle.off::after { left: 2px; }
+  .form-radio {
+    display: inline-flex;
+    background: var(--bg-tile);
+    border-radius: 6px;
+    padding: 2px;
+    box-shadow: var(--hairline);
+    gap: 0;
+  }
+  .form-radio .opt {
+    padding: 4px 11px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .form-radio .opt.active { background: var(--bg-window); color: var(--text-primary); box-shadow: var(--hairline), 0 1px 1px rgba(0,0,0,0.05); }
+  .window.dark .form-radio .opt.active { background: var(--bg-card-elevated); }
+
+  .danger-action {
+    background: var(--danger-soft);
+    color: var(--danger);
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--hairline);
+  }
+  .ghost-action {
+    background: var(--bg-tile);
+    color: var(--text-primary);
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: var(--hairline);
+  }
+
 </style>
 </head>
 <body>
@@ -1696,6 +2405,961 @@
       </div>
     </div>
 
+  </div>
+</section>
+
+<!-- ===========================================================================
+     TRAFFIC TAB (dark)
+     ======================================================================= -->
+<section>
+  <div class="frame-label">
+    TRAFFIC TAB
+    <span class="meta">— live connection feed · policy breakdown · click row → detail panel</span>
+  </div>
+  <div class="window dark">
+    <div class="topbar">
+      <div class="traffic-lights"><div class="light red"></div><div class="light yellow"></div><div class="light green"></div></div>
+      <div class="topbar-title">
+        <span class="title">Traffic</span>
+        <span class="subtitle">2,108 connections today · 12 active</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="cmdk"><span class="left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="placeholder">Filter host, policy, rule…</span></span><span class="hint">⌘&nbsp;F</span></div>
+      <div class="topbar-chip"><span class="dot"></span><span>leaf</span><span class="sep">·</span><span>🇭🇰 HK 10</span><span class="sep">·</span><span>12 active</span></div>
+      <button class="topbar-stop"><svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>Stop Proxy</button>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-glyph"></div><div class="brand-meta"><span class="brand-name">Blaze</span><span class="brand-build">0.1.0&nbsp;·&nbsp;build 62</span></div></div>
+        <div class="sidebar-group"><div class="label">Tools</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Overview</span></div>
+          <div class="sidebar-item selected"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="4" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="11" r="1" fill="currentColor" stroke="none"/></svg><span>Traffic</span><span class="count">2.1k</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">Routing</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg><span>Policies</span><span class="count">38</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M3 8h7M3 12h10"/><path d="M12.5 7.5l1.5 1.5-1.5 1.5"/></svg><span>Rules</span><span class="count">7,536</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">System</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/><path d="m5.5 8 2 2 3-3.5"/></svg><span>Diagnostics</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg><span>Settings</span></div>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-foot"><div class="avatar">HC</div><div class="who"><span class="name">Huazhao Chen</span><span class="role">Developer ID · HYF3XBWBL2</span></div></div>
+      </aside>
+
+      <main class="main">
+        <div class="filter-bar">
+          <div class="group">
+            <span class="pill">5 min</span>
+            <span class="pill active">1 hour</span>
+            <span class="pill">24 hours</span>
+            <span class="pill">All</span>
+          </div>
+          <div class="divider"></div>
+          <div class="group">
+            <span class="pill active">All</span>
+            <span class="pill">Connected</span>
+            <span class="pill">Closed</span>
+            <span class="pill">Failed</span>
+          </div>
+          <div class="divider"></div>
+          <div class="form-select">🇭🇰 Hong&nbsp;Kong&nbsp;10<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+          <div class="spacer"></div>
+          <span class="small-btn"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v4h4M12 12V8H8"/><path d="M2 6c1-2.5 3.5-4 6.5-3.5S13.5 5 13 8M12 8c-1 2.5-3.5 4-6.5 3.5"/></svg>Auto-refresh · 1s</span>
+          <span class="small-btn accent"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h10M3 7h8M5 11h4"/></svg>Export</span>
+        </div>
+
+        <div class="traffic-stats">
+          <div class="cell"><div class="lbl">Active</div><div class="val">12</div><div class="delta">+3 in last 5s</div></div>
+          <div class="cell"><div class="lbl">Today</div><div class="val">2,108</div><div class="delta">↑ 18% vs yesterday</div></div>
+          <div class="cell"><div class="lbl">Bytes ↑</div><div class="val">4.2 MB</div><div class="delta">avg 12.4 KB/s</div></div>
+          <div class="cell"><div class="lbl">Bytes ↓</div><div class="val">18.7 MB</div><div class="delta">avg 47.1 KB/s</div></div>
+          <div class="cell danger"><div class="lbl">Fail rate</div><div class="val">1.8 %</div><div class="delta neg">38 of 2,108</div></div>
+        </div>
+
+        <div class="traffic-layout">
+          <div class="traffic-table">
+            <div class="head">
+              <span>Time</span><span>Host</span><span>Policy</span><span>Rule</span><span>Bytes</span><span>Status</span><span></span>
+            </div>
+            <div class="traffic-row selected">
+              <span class="ts">00:42:18</span>
+              <span class="host"><span class="scheme">https://</span>api.telegram.org:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX</span>
+              <span class="bytes"><b>2.4</b>K↑ <b>14.8</b>K↓</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:42:14</span>
+              <span class="host"><span class="scheme">https://</span>claude.ai:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN, claude.ai</span>
+              <span class="bytes"><b>892</b> <b>5.1</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:42:11</span>
+              <span class="host"><span class="scheme">https://</span>chatgpt.com:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, openai.com</span>
+              <span class="bytes"><b>1.7</b>K <b>9.4</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:42:09</span>
+              <span class="host"><span class="scheme">https://</span>github.com:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, github.com</span>
+              <span class="bytes"><b>4.2</b>K <b>22.1</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:42:05</span>
+              <span class="host"><span class="scheme">https://</span>raw.githubusercontent.com:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, github.com</span>
+              <span class="bytes"><b>418</b> <b>312</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:42:01</span>
+              <span class="host"><span class="scheme">https://</span>cdn.synergypeak.org:443</span>
+              <span class="policy">HK 02</span>
+              <span class="rule">DOMAIN-SFX, synergypeak.org</span>
+              <span class="bytes"><b>1.2</b>K <b>892</b></span>
+              <span class="status-cell"><span class="d warn"></span>slow</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:41:58</span>
+              <span class="host"><span class="scheme">https://</span>api.anthropic.com:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, anthropic.com</span>
+              <span class="bytes"><b>2.1</b>K <b>3.4</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:41:54</span>
+              <span class="host"><span class="scheme">tcp://</span>pds-app-cn-beijing.cn-beijing.log.aliyuncs.com:80</span>
+              <span class="policy">DIRECT</span>
+              <span class="rule">DOMAIN-SFX, aliyuncs.com</span>
+              <span class="bytes"><b>1.8</b>K <b>0</b></span>
+              <span class="status-cell"><span class="d err"></span>RST</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:41:50</span>
+              <span class="host"><span class="scheme">https://</span>play.google.com:443</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, google.com</span>
+              <span class="bytes"><b>1.7</b>K <b>4.8</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="traffic-row">
+              <span class="ts">00:41:47</span>
+              <span class="host"><span class="scheme">https://</span>mtalk.google.com:5228</span>
+              <span class="policy">HK 10</span>
+              <span class="rule">DOMAIN-SFX, google.com</span>
+              <span class="bytes"><b>2.0</b>K <b>6.9</b>K</span>
+              <span class="status-cell"><span class="d ok"></span>connected</span>
+              <span class="chev">›</span>
+            </div>
+          </div>
+
+          <div class="traffic-side">
+            <div class="donut-card">
+              <div class="ttl">Policy breakdown · 1 h</div>
+              <div class="donut-wrap">
+                <svg viewBox="0 0 36 36">
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="6"/>
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="#0A84FF" stroke-width="6"
+                          stroke-dasharray="58 100" stroke-dashoffset="0" transform="rotate(-90 18 18)" stroke-linecap="round"/>
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="#30D158" stroke-width="6"
+                          stroke-dasharray="22 100" stroke-dashoffset="-58" transform="rotate(-90 18 18)" stroke-linecap="round"/>
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="#FF9F0A" stroke-width="6"
+                          stroke-dasharray="14 100" stroke-dashoffset="-80" transform="rotate(-90 18 18)" stroke-linecap="round"/>
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="#FF453A" stroke-width="6"
+                          stroke-dasharray="6 100" stroke-dashoffset="-94" transform="rotate(-90 18 18)" stroke-linecap="round"/>
+                  <text x="18" y="17" text-anchor="middle" font-size="6" fill="#F5F5F7" font-weight="600" font-family="-apple-system">1,247</text>
+                  <text x="18" y="22.5" text-anchor="middle" font-size="2.6" fill="#98989D" font-family="-apple-system">conns</text>
+                </svg>
+                <div class="donut-legend">
+                  <div class="item"><span class="swatch" style="background:#0A84FF"></span><span class="name">HK 10</span><span class="pct">58%</span></div>
+                  <div class="item"><span class="swatch" style="background:#30D158"></span><span class="name">DIRECT</span><span class="pct">22%</span></div>
+                  <div class="item"><span class="swatch" style="background:#FF9F0A"></span><span class="name">HK 02</span><span class="pct">14%</span></div>
+                  <div class="item"><span class="swatch" style="background:#FF453A"></span><span class="name">REJECT</span><span class="pct">6%</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="donut-card">
+              <div class="ttl">Top destinations</div>
+              <div class="top-hosts">
+                <div class="row"><span class="h">api.telegram.org</span><span class="n">182</span></div>
+                <div class="row"><span class="h">claude.ai</span><span class="n">94</span></div>
+                <div class="row"><span class="h">github.com</span><span class="n">61</span></div>
+                <div class="row"><span class="h">api.anthropic.com</span><span class="n">52</span></div>
+                <div class="row"><span class="h">chatgpt.com</span><span class="n">47</span></div>
+                <div class="row"><span class="h">api.apple-cloudkit.com</span><span class="n">38</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="status-strip">
+      <div class="left"><span class="dot"></span><span>leaf · 🇭🇰 HK 10</span><span style="color:var(--text-tertiary)">·</span><span>Trojan TLS · pid 18472</span></div>
+      <div class="mid"><span><span class="arrow">↑</span>12.4 KB/s</span><span><span class="arrow">↓</span>47.1 KB/s</span></div>
+      <div class="right"><span>12 active</span><span style="color:var(--text-tertiary)">·</span><span>en1</span><span class="kbd">⌘&nbsp;K</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===========================================================================
+     POLICIES TAB (light)
+     ======================================================================= -->
+<section>
+  <div class="frame-label">
+    POLICIES TAB
+    <span class="meta">— upstream nodes · live latency · group selection</span>
+  </div>
+  <div class="window light">
+    <div class="topbar">
+      <div class="traffic-lights"><div class="light red"></div><div class="light yellow"></div><div class="light green"></div></div>
+      <div class="topbar-title">
+        <span class="title">Policies</span>
+        <span class="subtitle">38 nodes · 6 groups · last probed 2 s ago</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="cmdk"><span class="left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="placeholder">Filter by region or protocol…</span></span><span class="hint">⌘&nbsp;F</span></div>
+      <div class="topbar-chip"><span class="dot"></span><span>leaf</span><span class="sep">·</span><span>🇭🇰 HK 10</span><span class="sep">·</span><span>12 active</span></div>
+      <button class="topbar-stop"><svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>Stop Proxy</button>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-glyph"></div><div class="brand-meta"><span class="brand-name">Blaze</span><span class="brand-build">0.1.0&nbsp;·&nbsp;build 62</span></div></div>
+        <div class="sidebar-group"><div class="label">Tools</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Overview</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="4" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="11" r="1" fill="currentColor" stroke="none"/></svg><span>Traffic</span><span class="count">2.1k</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">Routing</div>
+          <div class="sidebar-item selected"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg><span>Policies</span><span class="count">38</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M3 8h7M3 12h10"/><path d="M12.5 7.5l1.5 1.5-1.5 1.5"/></svg><span>Rules</span><span class="count">7,536</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">System</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/><path d="m5.5 8 2 2 3-3.5"/></svg><span>Diagnostics</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg><span>Settings</span></div>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-foot"><div class="avatar">HC</div><div class="who"><span class="name">Huazhao Chen</span><span class="role">Developer ID · HYF3XBWBL2</span></div></div>
+      </aside>
+
+      <main class="main">
+        <div class="filter-bar">
+          <div class="group">
+            <span class="pill active">All · 38</span>
+            <span class="pill">Trojan · 32</span>
+            <span class="pill">Shadowsocks · 4</span>
+            <span class="pill">Direct · 1</span>
+            <span class="pill">Reject · 1</span>
+          </div>
+          <div class="divider"></div>
+          <div class="form-select">Sort: Latency ↑<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+          <div class="spacer"></div>
+          <span class="small-btn"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><path d="M7 2v5l3 2"/></svg>Probe all <span class="kbd" style="margin-left:6px;">⌘R</span></span>
+          <span class="small-btn accent"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 2v10M2 7h10"/></svg>Add node</span>
+        </div>
+
+        <div class="policy-grid">
+          <div class="policy-card current">
+            <div class="top">
+              <span class="flag">🇭🇰</span>
+              <div class="name-block"><span class="nm">Hong Kong 10</span><span class="proto">trojan · 22857</span></div>
+              <span class="more">⋯</span>
+            </div>
+            <div class="lat"><span class="big">86</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,12 L6,10 L12,11 L18,8 L24,9 L30,7 L36,9 L42,8 L48,7 L54,9 L60,8" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot"></span>5 active</span><span class="badge">SELECTED</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇭🇰</span><div class="name-block"><span class="nm">Hong Kong 02</span><span class="proto">trojan · 20102</span></div><span class="more">⋯</span></div>
+            <div class="lat"><span class="big">94</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,12 L6,11 L12,10 L18,10 L24,8 L30,9 L36,11 L42,9 L48,8 L54,10 L60,9" fill="none" stroke="var(--positive)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot"></span>2 active</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇸🇬</span><div class="name-block"><span class="nm">Singapore 04</span><span class="proto">trojan · 18757</span></div><span class="more">⋯</span></div>
+            <div class="lat"><span class="big">118</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,9 L6,10 L12,9 L18,11 L24,10 L30,8 L36,9 L42,11 L48,10 L54,9 L60,10" fill="none" stroke="var(--positive)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot"></span>1 active</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇯🇵</span><div class="name-block"><span class="nm">Tokyo 01</span><span class="proto">trojan · 16865</span></div><span class="more">⋯</span></div>
+            <div class="lat warn"><span class="big">152</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,11 L6,9 L12,12 L18,10 L24,13 L30,11 L36,14 L42,12 L48,11 L54,13 L60,12" fill="none" stroke="var(--warning)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot" style="background:var(--text-tertiary)"></span>idle</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇺🇸</span><div class="name-block"><span class="nm">Los Angeles 02</span><span class="proto">trojan · 21438</span></div><span class="more">⋯</span></div>
+            <div class="lat danger"><span class="big">208</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,14 L6,13 L12,15 L18,14 L24,16 L30,14 L36,15 L42,16 L48,15 L54,14 L60,15" fill="none" stroke="var(--danger)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot" style="background:var(--text-tertiary)"></span>idle</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇰🇷</span><div class="name-block"><span class="nm">Seoul 03</span><span class="proto">trojan · 23642</span></div><span class="more">⋯</span></div>
+            <div class="lat timeout"><span class="big">timeout</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,8 L60,8" fill="none" stroke="var(--danger-soft)" stroke-width="1.4" stroke-dasharray="2 2"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot" style="background:var(--danger)"></span>3 failures</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇩🇪</span><div class="name-block"><span class="nm">Frankfurt 01</span><span class="proto">trojan · 17864</span></div><span class="more">⋯</span></div>
+            <div class="lat warn"><span class="big">182</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,12 L6,13 L12,11 L18,13 L24,12 L30,14 L36,12 L42,13 L48,11 L54,13 L60,12" fill="none" stroke="var(--warning)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot" style="background:var(--text-tertiary)"></span>idle</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top"><span class="flag">🇬🇧</span><div class="name-block"><span class="nm">London 02</span><span class="proto">trojan · 22919</span></div><span class="more">⋯</span></div>
+            <div class="lat warn"><span class="big">196</span><span class="u">ms</span>
+              <svg class="pulse-spark" viewBox="0 0 60 18" preserveAspectRatio="none">
+                <path d="M0,13 L6,12 L12,14 L18,13 L24,12 L30,14 L36,15 L42,13 L48,14 L54,12 L60,14" fill="none" stroke="var(--warning)" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="footrow"><span class="l"><span class="dot" style="background:var(--text-tertiary)"></span>idle</span></div>
+          </div>
+          <div class="policy-card">
+            <div class="top">
+              <span class="flag" style="font-size: 18px;">⚡</span>
+              <div class="name-block"><span class="nm">DIRECT</span><span class="proto">no upstream · OS routing</span></div>
+              <span class="more">⋯</span>
+            </div>
+            <div class="lat"><span class="big" style="color:var(--text-secondary)">—</span><span class="u" style="margin-left:8px;">local</span></div>
+            <div class="footrow"><span class="l"><span class="dot"></span>22% of traffic today</span></div>
+          </div>
+        </div>
+
+        <div class="groups-panel">
+          <div class="panel-head" style="padding: 0 0 8px;">
+            <span class="title">Proxy groups</span>
+            <span class="right"><span class="link">+ New group</span></span>
+          </div>
+          <div class="group-row">
+            <span><b class="name">Auto</b><span class="kind">url-test · 60s</span></span>
+            <span style="font-size:11px;color:var(--text-secondary);">picking lowest latency among 7</span>
+            <span class="pick">🇭🇰 Hong Kong 10 <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></span>
+          </div>
+          <div class="group-row">
+            <span><b class="name">Manual</b><span class="kind">select</span></span>
+            <span style="font-size:11px;color:var(--text-secondary);">user-picked</span>
+            <span class="pick">🇸🇬 Singapore 04 <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></span>
+          </div>
+          <div class="group-row">
+            <span><b class="name">Scholar</b><span class="kind">select</span></span>
+            <span style="font-size:11px;color:var(--text-secondary);">routed via RULE-SET, 2 sources</span>
+            <span class="pick">🇭🇰 Hong Kong 02 <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></span>
+          </div>
+          <div class="group-row">
+            <span><b class="name">Streaming</b><span class="kind">fallback</span></span>
+            <span style="font-size:11px;color:var(--text-secondary);">try HK 10 → SG 04 → JP 01</span>
+            <span class="pick">🇭🇰 Hong Kong 10 <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="status-strip">
+      <div class="left"><span class="dot"></span><span>leaf · 🇭🇰 HK 10</span><span style="color:var(--text-tertiary)">·</span><span>Trojan TLS · pid 18472</span></div>
+      <div class="mid"><span><span class="arrow">↑</span>12.4 KB/s</span><span><span class="arrow">↓</span>47.1 KB/s</span></div>
+      <div class="right"><span>12 active</span><span style="color:var(--text-tertiary)">·</span><span>en1</span><span class="kbd">⌘&nbsp;K</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===========================================================================
+     RULES TAB (dark)
+     ======================================================================= -->
+<section>
+  <div class="frame-label">
+    RULES TAB
+    <span class="meta">— 7,536 rules · search · live test against URL</span>
+  </div>
+  <div class="window dark">
+    <div class="topbar">
+      <div class="traffic-lights"><div class="light red"></div><div class="light yellow"></div><div class="light green"></div></div>
+      <div class="topbar-title">
+        <span class="title">Rules</span>
+        <span class="subtitle">7,536 loaded · 32 RULE-SET sources · 23 matched today</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="cmdk"><span class="left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="placeholder">Filter rule value or target…</span></span><span class="hint">⌘&nbsp;F</span></div>
+      <div class="topbar-chip"><span class="dot"></span><span>leaf</span><span class="sep">·</span><span>🇭🇰 HK 10</span><span class="sep">·</span><span>12 active</span></div>
+      <button class="topbar-stop"><svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>Stop Proxy</button>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-glyph"></div><div class="brand-meta"><span class="brand-name">Blaze</span><span class="brand-build">0.1.0&nbsp;·&nbsp;build 62</span></div></div>
+        <div class="sidebar-group"><div class="label">Tools</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Overview</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="4" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="11" r="1" fill="currentColor" stroke="none"/></svg><span>Traffic</span><span class="count">2.1k</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">Routing</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg><span>Policies</span><span class="count">38</span></div>
+          <div class="sidebar-item selected"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M3 8h7M3 12h10"/><path d="M12.5 7.5l1.5 1.5-1.5 1.5"/></svg><span>Rules</span><span class="count">7,536</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">System</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/><path d="m5.5 8 2 2 3-3.5"/></svg><span>Diagnostics</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg><span>Settings</span></div>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-foot"><div class="avatar">HC</div><div class="who"><span class="name">Huazhao Chen</span><span class="role">Developer ID · HYF3XBWBL2</span></div></div>
+      </aside>
+
+      <main class="main">
+        <div class="filter-bar">
+          <div class="group">
+            <span class="pill active">All · 7,536</span>
+            <span class="pill">DOMAIN · 256</span>
+            <span class="pill">DOMAIN-SFX · 4,756</span>
+            <span class="pill">DOMAIN-KEYWORD · 263</span>
+            <span class="pill">IP-CIDR · 2,261</span>
+            <span class="pill">GEOIP · 1</span>
+          </div>
+          <div class="spacer"></div>
+          <span class="small-btn"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v4h4M12 12V8H8"/><path d="M2 6c1-2.5 3.5-4 6.5-3.5S13.5 5 13 8M12 8c-1 2.5-3.5 4-6.5 3.5"/></svg>Refresh from sources</span>
+          <span class="small-btn accent"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 2v10M2 7h10"/></svg>New inline rule</span>
+        </div>
+
+        <div class="rules-layout">
+          <div class="rules-list-panel">
+            <div class="rule-source-bar">
+              <span class="chip-source">Profile</span>
+              <span style="color:var(--text-tertiary);">+</span>
+              <span class="chip-source">RULE-SET · Extra_CN_3.list</span>
+              <span class="chip-source">+ 31 more</span>
+              <div class="spacer" style="flex:1;"></div>
+              <span style="font-size:11px;color:var(--text-tertiary);">showing 12 of 7,536</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="value">google.com</span>
+              <span class="target">🇭🇰 HK 10</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="value">anthropic.com</span>
+              <span class="target">🇭🇰 HK 10</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="value">openai.com</span>
+              <span class="target">🇭🇰 HK 10</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN</span>
+              <span class="value">claude.ai</span>
+              <span class="target">🇭🇰 HK 10</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="value">github.com</span>
+              <span class="target">Scholar</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind ip">IP-CIDR</span>
+              <span class="value">10.0.0.0/8</span>
+              <span class="target direct">DIRECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind ip">IP-CIDR</span>
+              <span class="value">192.168.0.0/16</span>
+              <span class="target direct">DIRECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind ip">IP-CIDR</span>
+              <span class="value">198.18.0.0/15</span>
+              <span class="target direct">DIRECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-KEYWORD</span>
+              <span class="value">aliyuncs.com</span>
+              <span class="target direct">DIRECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="value">cn-beijing.log.aliyuncs.com</span>
+              <span class="target reject">REJECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind geoip">GEOIP</span>
+              <span class="value">CN</span>
+              <span class="target direct">DIRECT</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind final">FINAL</span>
+              <span class="value" style="color:var(--text-tertiary);">·</span>
+              <span class="target">🇭🇰 HK 10</span>
+              <span class="chev">›</span>
+            </div>
+          </div>
+
+          <div class="rules-tester">
+            <div class="lab">Live test</div>
+            <div class="test-input">
+              <span style="color:var(--text-tertiary);">https://</span>
+              <span>api.telegram.org:443</span>
+              <span class="cursor"></span>
+            </div>
+
+            <div class="matched">
+              <div class="head"><span class="d"></span>Matched after 3 checks · 0.14 ms</div>
+              <div class="line"><span class="chip" style="font-family:var(--font-mono);">DOMAIN-SFX</span><span style="color:var(--text-primary)">telegram.org</span><span style="color:var(--text-tertiary);">→</span><span class="chip accent">🇭🇰 HK 10</span></div>
+            </div>
+
+            <div>
+              <div class="lab" style="margin-bottom:6px;">Evaluation trace</div>
+              <div class="step-row"><span class="ind">1.</span><span>General bypass · localhost, 10.0.0.0/8 · skipped</span></div>
+              <div class="step-row"><span class="ind">2.</span><span>DOMAIN, claude.ai · no match</span></div>
+              <div class="step-row match"><span class="ind">3.</span><span>DOMAIN-SFX, telegram.org · MATCH · → HK 10</span></div>
+              <div class="step-row" style="opacity:0.5;"><span class="ind">·</span><span>7,533 rules skipped (short-circuit)</span></div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:auto;">
+              <span class="ghost-action" style="flex:1;text-align:center;">Reveal in list</span>
+              <span class="ghost-action" style="flex:1;text-align:center;">Test another</span>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="status-strip">
+      <div class="left"><span class="dot"></span><span>leaf · 🇭🇰 HK 10</span><span style="color:var(--text-tertiary)">·</span><span>Trojan TLS · pid 18472</span></div>
+      <div class="mid"><span><span class="arrow">↑</span>12.4 KB/s</span><span><span class="arrow">↓</span>47.1 KB/s</span></div>
+      <div class="right"><span>12 active</span><span style="color:var(--text-tertiary)">·</span><span>en1</span><span class="kbd">⌘&nbsp;K</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===========================================================================
+     DIAGNOSTICS TAB (light)
+     ======================================================================= -->
+<section>
+  <div class="frame-label">
+    DIAGNOSTICS TAB
+    <span class="meta">— 8-step startup workflow · live counters · tail of recent events</span>
+  </div>
+  <div class="window light">
+    <div class="topbar">
+      <div class="traffic-lights"><div class="light red"></div><div class="light yellow"></div><div class="light green"></div></div>
+      <div class="topbar-title">
+        <span class="title">Diagnostics</span>
+        <span class="subtitle">Last run · 00:38:20 · 7/8 passed · probes 19/25</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="cmdk"><span class="left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="placeholder">Search events, hosts, errors…</span></span><span class="hint">⌘&nbsp;F</span></div>
+      <div class="topbar-chip"><span class="dot"></span><span>leaf</span><span class="sep">·</span><span>🇭🇰 HK 10</span><span class="sep">·</span><span>12 active</span></div>
+      <button class="topbar-stop"><svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>Stop Proxy</button>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-glyph"></div><div class="brand-meta"><span class="brand-name">Blaze</span><span class="brand-build">0.1.0&nbsp;·&nbsp;build 62</span></div></div>
+        <div class="sidebar-group"><div class="label">Tools</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Overview</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="4" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="11" r="1" fill="currentColor" stroke="none"/></svg><span>Traffic</span><span class="count">2.1k</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">Routing</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg><span>Policies</span><span class="count">38</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M3 8h7M3 12h10"/><path d="M12.5 7.5l1.5 1.5-1.5 1.5"/></svg><span>Rules</span><span class="count">7,536</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">System</div>
+          <div class="sidebar-item selected"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/><path d="m5.5 8 2 2 3-3.5"/></svg><span>Diagnostics</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg><span>Settings</span></div>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-foot"><div class="avatar">HC</div><div class="who"><span class="name">Huazhao Chen</span><span class="role">Developer ID · HYF3XBWBL2</span></div></div>
+      </aside>
+
+      <main class="main">
+        <div class="filter-bar">
+          <span style="font-size:12px;font-weight:600;letter-spacing:-0.005em;">Startup self-test</span>
+          <span style="font-size:11px;color:var(--text-secondary);">Last ran 4 m 41 s ago · auto-armed watchdog 5 min</span>
+          <div class="spacer"></div>
+          <span class="small-btn"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><path d="M5 5l4 4M9 5l-4 4"/></svg>Force recovery</span>
+          <span class="small-btn accent"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2.5 12 7 4 11.5z" fill="currentColor"/></svg>Run again <span class="kbd" style="margin-left:6px;">⌘⇧R</span></span>
+        </div>
+
+        <div class="diag-layout">
+          <div class="step-timeline">
+            <div class="panel-head" style="padding:0;margin-bottom:8px;"><span class="title">Startup workflow</span><span class="right"><span class="link">View timing</span></span></div>
+            <div class="timeline-step">
+              <div class="marker">1</div>
+              <div class="step-body">
+                <div class="nm">Surge preflight <span class="ts">+0.0 s</span></div>
+                <div class="det">Surge app · running → stopped via osascript<br>VPN service · disconnected</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker">2</div>
+              <div class="step-body">
+                <div class="nm">App trust &amp; extension <span class="ts">+1.3 s</span></div>
+                <div class="det">spctl · accepted · Notarized Developer ID<br>active sysext build 62 == bundled 62 ✓</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker">3</div>
+              <div class="step-body">
+                <div class="nm">Listeners (leaf) <span class="ts">+1.4 s</span></div>
+                <div class="det">leaf pid 18472 · HTTP 19080 · SOCKS5 19081<br>orphan cleanup · pkill exit 1 (no orphans)</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker">4</div>
+              <div class="step-body">
+                <div class="nm">Tunnel configuration <span class="ts">+2.1 s</span></div>
+                <div class="det">HEV socks5 tunnel · MTU 1280 · DNS 198.19.0.1<br>10 excluded IPv4 for upstream + DoH</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker">5</div>
+              <div class="step-body">
+                <div class="nm">Tunnel start <span class="ts">+3.0 s</span></div>
+                <div class="det">NEPacketTunnelProvider · connected after 542 ms<br>utun4 · routes installed</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker">6</div>
+              <div class="step-body">
+                <div class="nm">Packet flow diagnostics <span class="ts">+3.2 s</span></div>
+                <div class="det">packets 138 · TCP 90 · DNS 42 · HEV in/out 138/110</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="marker run">7</div>
+              <div class="step-body">
+                <div class="nm">Connectivity probes <span class="ts">+3.4 s · running</span></div>
+                <div class="det">19 of 25 passed · 0 blocking failures<br>last · ChatGPT SOCKS5 Fetch 142 ms</div>
+                <div class="actions"><span class="link">View probe matrix</span> · <span class="link">Show in Traffic</span></div>
+              </div>
+            </div>
+            <div class="timeline-step pending">
+              <div class="marker pending">8</div>
+              <div class="step-body">
+                <div class="nm">Surge restore <span class="ts">pending</span></div>
+                <div class="det">Will offer when Blaze VPN is stopped</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="diag-right">
+            <div class="counter-grid">
+              <div class="counter-card"><div class="k">Packets</div><div class="v ok">138</div><div class="sub">TCP 90 · DNS 42 · other 6</div></div>
+              <div class="counter-card"><div class="k">HEV in / out</div><div class="v">138 / 110</div><div class="sub">bridge errors 0</div></div>
+              <div class="counter-card"><div class="k">Active TCP</div><div class="v">12</div><div class="sub">fake-IP 0 · SOCKS 0/0/0</div></div>
+              <div class="counter-card"><div class="k">Retransmits</div><div class="v warn">7</div><div class="sub">over 138 segments</div></div>
+            </div>
+
+            <div class="mini-mode">
+              <div class="ttl"><span class="dot"></span>DNS · FakeIP</div>
+              <div class="kv-row"><span class="k">Mode</span><span class="v">FakeIP · 198.18.0.0/15</span></div>
+              <div class="kv-row"><span class="k">Tunnel DNS</span><span class="v">198.19.0.1 → https://1.1.1.1/dns-query</span></div>
+              <div class="kv-row"><span class="k">DoH bypass</span><span class="v">en1 · 1.1.1.1, 8.8.8.8, 223.5.5.5</span></div>
+              <div class="kv-row"><span class="k">Upstream A</span><span class="v">03bfbe3155… → 43.132.133.175 · TTL 60s</span></div>
+              <div class="kv-row"><span class="k">Queries / s</span><span class="v">7.2 avg · 36 in last 5 s</span></div>
+            </div>
+
+            <div class="log-tail">
+              <div class="panel-head"><span class="title">Recent events</span><span class="right"><span class="link">Open log file</span></span></div>
+              <div class="log-line"><span class="ts">00:42:18</span><span class="level passed">PASS</span><span class="msg"><span class="k">STARTUP</span> Step 7 Passed: 25 checks completed</span></div>
+              <div class="log-line"><span class="ts">00:42:14</span><span class="level info">INFO</span><span class="msg"><span class="k">STARTUP</span> Step 7 Running 25/25 · ChatGPT HTTP Fetch · Passed</span></div>
+              <div class="log-line"><span class="ts">00:42:09</span><span class="level info">INFO</span><span class="msg"><span class="k">TROJAN</span> [4FAA7230] ready in 87 ms via en1 · dst api.anthropic.com:443</span></div>
+              <div class="log-line"><span class="ts">00:42:05</span><span class="level passed">PASS</span><span class="msg"><span class="k">DIAG</span> Tunnel Bypass · 10 IPv4 excluded</span></div>
+              <div class="log-line"><span class="ts">00:42:03</span><span class="level info">INFO</span><span class="msg"><span class="k">LEAF</span> leaf started pid=18472 attempt=0 config=…/leaf.conf</span></div>
+              <div class="log-line"><span class="ts">00:42:01</span><span class="level warn">WARN</span><span class="msg"><span class="k">SURGE</span> Step 1 detected running Surge · stopping for handoff</span></div>
+              <div class="log-line"><span class="ts">00:42:00</span><span class="level info">INFO</span><span class="msg"><span class="k">AUTO</span> Received automation action · run-startup-workflow</span></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="status-strip">
+      <div class="left"><span class="dot"></span><span>leaf · 🇭🇰 HK 10</span><span style="color:var(--text-tertiary)">·</span><span>Trojan TLS · pid 18472</span></div>
+      <div class="mid"><span><span class="arrow">↑</span>12.4 KB/s</span><span><span class="arrow">↓</span>47.1 KB/s</span></div>
+      <div class="right"><span>12 active</span><span style="color:var(--text-tertiary)">·</span><span>en1</span><span class="kbd">⌘&nbsp;K</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===========================================================================
+     SETTINGS TAB (dark)
+     ======================================================================= -->
+<section>
+  <div class="frame-label">
+    SETTINGS TAB
+    <span class="meta">— profile · engine · routing · system handoff · about</span>
+  </div>
+  <div class="window dark">
+    <div class="topbar">
+      <div class="traffic-lights"><div class="light red"></div><div class="light yellow"></div><div class="light green"></div></div>
+      <div class="topbar-title">
+        <span class="title">Settings</span>
+        <span class="subtitle">Profile · synergypeak.org · auto-refresh 12 h</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="cmdk"><span class="left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="placeholder">Search settings…</span></span><span class="hint">⌘&nbsp;F</span></div>
+      <div class="topbar-chip"><span class="dot"></span><span>leaf</span><span class="sep">·</span><span>🇭🇰 HK 10</span><span class="sep">·</span><span>12 active</span></div>
+      <button class="topbar-stop"><svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>Stop Proxy</button>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-glyph"></div><div class="brand-meta"><span class="brand-name">Blaze</span><span class="brand-build">0.1.0&nbsp;·&nbsp;build 62</span></div></div>
+        <div class="sidebar-group"><div class="label">Tools</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Overview</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="4" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="11" r="1" fill="currentColor" stroke="none"/></svg><span>Traffic</span><span class="count">2.1k</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">Routing</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg><span>Policies</span><span class="count">38</span></div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M3 8h7M3 12h10"/><path d="M12.5 7.5l1.5 1.5-1.5 1.5"/></svg><span>Rules</span><span class="count">7,536</span></div>
+        </div>
+        <div class="sidebar-group"><div class="label">System</div>
+          <div class="sidebar-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/><path d="m5.5 8 2 2 3-3.5"/></svg><span>Diagnostics</span></div>
+          <div class="sidebar-item selected"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg><span>Settings</span></div>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-foot"><div class="avatar">HC</div><div class="who"><span class="name">Huazhao Chen</span><span class="role">Developer ID · HYF3XBWBL2</span></div></div>
+      </aside>
+
+      <main class="main">
+        <div class="settings-layout">
+          <nav class="settings-nav">
+            <div class="sn-item active">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h11v8h-11z"/><path d="M2.5 7h11M5 4.5v-2h6v2"/></svg>
+              Profile
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 6h4v4H6z"/></svg>
+              Engine
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 3 4 3 6s-1 4-3 6c-2-2-3-4-3-6s1-4 3-6z"/></svg>
+              Routing
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5l5.5 3v4c0 3-2.4 5.4-5.5 6-3.1-.6-5.5-3-5.5-6v-4L8 1.5z"/></svg>
+              System
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5h10M3 8h10M3 11h7"/></svg>
+              Logging
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.5"/></svg>
+              Updates
+            </div>
+            <div class="sn-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 5.5v3M8 10.5h.01"/></svg>
+              About
+            </div>
+          </nav>
+
+          <div>
+            <div class="settings-section">
+              <div class="sec-head">Profile source</div>
+              <div class="sec-desc">Where Blaze reads its proxy nodes, groups, and rules from.</div>
+              <div class="form-row">
+                <div class="label">Managed config URL</div>
+                <div class="form-input wide" style="margin-left:auto;">https://cdn.synergypeak.org/?L2Rvd25sb2FkQ29uZmlnL1N1cmdlQ29uZmln…</div>
+                <span class="ghost-action">Reveal</span>
+              </div>
+              <div class="form-row">
+                <div class="label">Auto-refresh<span class="hint">Re-fetch the managed URL on this interval</span></div>
+                <div></div>
+                <div class="form-select">12 hours<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+              </div>
+              <div class="form-row">
+                <div class="label">Last fetch</div>
+                <div style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-secondary);">2026-05-23 00:11:42 · 38 proxies · 6 groups · 35 rules</div>
+                <span class="ghost-action">Refresh now</span>
+              </div>
+              <div class="form-row full">
+                <div class="label">Inline edits<span class="hint">Override the managed source with rules typed here</span></div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <div class="form-toggle off"></div>
+                  <span style="font-size:11.5px;color:var(--text-secondary);">disabled · using upstream as-is</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="sec-head">Engine · leaf</div>
+              <div class="sec-desc">The embedded Rust proxy. Restarting applies new port/log settings.</div>
+              <div class="form-row">
+                <div class="label">HTTP port</div>
+                <div></div>
+                <div class="form-input">19080</div>
+              </div>
+              <div class="form-row">
+                <div class="label">SOCKS5 port</div>
+                <div></div>
+                <div class="form-input">19081</div>
+              </div>
+              <div class="form-row">
+                <div class="label">Bound interface<span class="hint">Upstream dials use this physical interface</span></div>
+                <div></div>
+                <div class="form-select">Auto · en1 (Wi-Fi)<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+              </div>
+              <div class="form-row">
+                <div class="label">DNS servers</div>
+                <div></div>
+                <div class="form-input wide" style="text-align:right;">1.1.1.1, 119.29.29.29, 223.5.5.5, 8.8.8.8</div>
+              </div>
+              <div class="form-row">
+                <div class="label">Log level</div>
+                <div></div>
+                <div class="form-radio">
+                  <span class="opt">error</span>
+                  <span class="opt">warn</span>
+                  <span class="opt active">info</span>
+                  <span class="opt">debug</span>
+                  <span class="opt">trace</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="label">Health probe<span class="hint">TCP probe the SOCKS5 port every 15 s</span></div>
+                <div></div>
+                <div class="form-toggle"></div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="sec-head">Routing</div>
+              <div class="sec-desc">How leaf decides which policy receives each connection.</div>
+              <div class="form-row full">
+                <div class="label">Mode</div>
+                <div class="form-radio">
+                  <span class="opt">Direct</span>
+                  <span class="opt">Global</span>
+                  <span class="opt active">Rule-based</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="label">Fallback policy<span class="hint">Used by the synthesised FINAL when the profile has none</span></div>
+                <div></div>
+                <div class="form-select">🇭🇰 Hong Kong 10<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+              </div>
+              <div class="form-row">
+                <div class="label">FakeIP range</div>
+                <div></div>
+                <div class="form-input">198.18.0.0/15</div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="sec-head">System handoff</div>
+              <div class="sec-desc">Coordinate with Surge and the macOS system proxy.</div>
+              <div class="form-row">
+                <div class="label">Stop Surge before starting<span class="hint">Avoid DNS / utun ownership conflict</span></div>
+                <div></div>
+                <div class="form-toggle"></div>
+              </div>
+              <div class="form-row">
+                <div class="label">Restore Surge on shutdown<span class="hint">Open Surge app + ensure VPN reconnects</span></div>
+                <div></div>
+                <div class="form-toggle"></div>
+              </div>
+              <div class="form-row">
+                <div class="label">Watchdog timeout<span class="hint">Auto-recover if startup workflow stalls</span></div>
+                <div></div>
+                <div class="form-select">5 minutes<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2.5 4 2.5 2 2.5-2"/></svg></div>
+              </div>
+              <div class="form-row">
+                <div class="label">Telegram ping on recovery<span class="hint">Sends "继续" prompt to chat 94984185</span></div>
+                <div style="font-size:11.5px;color:var(--text-secondary);font-family:var(--font-mono);">@blaze_resume_bot · verified</div>
+                <div class="form-toggle"></div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <div class="sec-head">About</div>
+              <div class="form-row">
+                <div class="label">Version</div>
+                <div style="font-family:var(--font-mono);font-size:11.5px;">0.1.0 · build 62 · arm64</div>
+                <span class="ghost-action">Check for update</span>
+              </div>
+              <div class="form-row">
+                <div class="label">Components</div>
+                <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);line-height:1.6;">
+                  leaf 0.14.2 · 7a9101b5 (Apache-2.0)<br>
+                  hev-socks5-tunnel · 3ffa5b91 (MIT)<br>
+                  swift 6.1.2 · macOS 15.0 SDK
+                </div>
+                <div></div>
+              </div>
+              <div class="form-row">
+                <div class="label">Signing</div>
+                <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);">Developer ID Application · HYF3XBWBL2 · Notarized</div>
+                <div></div>
+              </div>
+              <div class="form-row">
+                <div class="label" style="color:var(--danger);">Reset</div>
+                <div style="font-size:11.5px;color:var(--text-secondary);">Forget profile, restore points, telemetry. Does not touch installed system extension.</div>
+                <span class="danger-action">Reset Blaze…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="status-strip">
+      <div class="left"><span class="dot"></span><span>leaf · 🇭🇰 HK 10</span><span style="color:var(--text-tertiary)">·</span><span>Trojan TLS · pid 18472</span></div>
+      <div class="mid"><span><span class="arrow">↑</span>12.4 KB/s</span><span><span class="arrow">↓</span>47.1 KB/s</span></div>
+      <div class="right"><span>12 active</span><span style="color:var(--text-tertiary)">·</span><span>en1</span><span class="kbd">⌘&nbsp;K</span></div>
+    </div>
   </div>
 </section>
 
