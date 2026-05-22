@@ -216,6 +216,14 @@ Record every self-test cycle here before and after validation. Include the build
 - In-app watchdog also wired: `WorkbenchStore.recoverFromStartupWatchdog` shells out to the bundled `Contents/Resources/notify-resume.sh` so any recovery — automation URL, external script, or the 5-min in-app timer — produces a Telegram ping. `scripts/build-app.sh` copies the script into the bundle.
 - Build 62 packaging blocked: notarytool keychain profile `blaze-notary` was evicted (login keychain timed out after many hours of session activity). User intervention needed: unlock the login keychain OR re-run `xcrun notarytool store-credentials blaze-notary ...`. Telegram alert sent.
 
+## 2026-05-23 00:27 Asia/Shanghai - Build 62 (end-to-end resume notification)
+
+- Notarization: id `43368a49-8a5e-41ff-ae4c-76cb2a32da8e`, Accepted, stapled (keychain re-unlocked after the previous build's failure).
+- Step 7 result: **PASSED 25/25** at 00:22:49 (6th consecutive clean Step 7: 55, 56, 58, 59, 61, 62).
+- In-app watchdog fired naturally at 00:27:30 (5 min after Step 7 entered the long-poll state). For the first time, the watchdog recovery path also spawned a `curl` subprocess at 00:27:30.103 — visible in the unified log under `process == "curl"` resolving the telegram API via en1[802.11]. Confirms the new `WorkbenchStore.notifyUserOfRecovery` → bundled `Contents/Resources/notify-resume.sh` → telegram delivery path runs automatically on real recoveries, not just from the external test watchdog.
+- Step 8: Surge restored cleanly at 00:27:32. `scutil --nc list` shows Surge connected, Blaze disconnected.
+- This closes the resilience loop: probes that survived 12-way concurrency, a supervisor that respawns leaf on exit, an interface-flip watcher, an orphan cleanup, a health probe, AND a user notification on every recovery path. The 6 commits between 0071314 and c1837cc lock in the architecture; 112 unit tests guard the leaf config format and parser.
+
 ## Loop infrastructure delivered in this session (Builds 47→62)
 
 - End-to-end distribution pipeline validated: build-app.sh + notarize-app.sh + staple + install + guarded startup workflow now demonstrably runnable unattended; each step writes a recoverable artifact.
