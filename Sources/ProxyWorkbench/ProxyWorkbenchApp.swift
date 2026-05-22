@@ -14,16 +14,17 @@ struct BlazeApp: App {
 
     var body: some Scene {
         WindowGroup("blaze") {
-            ContentView()
+            BlazeRedesignView()
                 .environmentObject(store)
-                .tint(.indigo)
-                .frame(minWidth: 1080, minHeight: 720)
+                .tint(.blue)
+                .frame(minWidth: 1100, minHeight: 720)
                 .task {
                     appDelegate.store = store
                     store.loadInitialProfile()
                 }
         }
         .defaultSize(width: 1240, height: 820)
+        .windowStyle(.titleBar)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Load Sample") {

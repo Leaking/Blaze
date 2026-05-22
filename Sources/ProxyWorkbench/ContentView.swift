@@ -147,7 +147,7 @@ struct CommandPaletteView: View {
 
     private var actions: [WorkbenchCommand] {
         [
-            WorkbenchCommand(title: "Start Proxy", subtitle: "Start local listeners and apply macOS proxy", systemImage: "play.fill", keywords: "start enable run proxy", dismissesAfterRun: false) {
+            WorkbenchCommand(title: "Start Proxy", subtitle: "Start leaf engine and apply macOS proxy", systemImage: "play.fill", keywords: "start enable run proxy", dismissesAfterRun: false) {
                 pendingSystemAction = .start
                 showingSystemActionConfirmation = true
             },
@@ -275,9 +275,9 @@ struct CommandPaletteView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             if pendingSystemAction == .stop {
-                Text("This stops local listeners and restores the saved macOS proxy settings when available.")
+                Text("This stops the leaf engine and restores the saved macOS proxy settings when available.")
             } else {
-                Text("This saves the current macOS proxy settings, starts local listeners, and changes the selected network service to blaze's local ports.")
+                Text("This saves the current macOS proxy settings, starts the leaf engine, and points the selected network service at blaze's local HTTP and SOCKS5 ports.")
             }
         }
     }
@@ -390,7 +390,7 @@ struct OverviewView: View {
                 OverviewStatusCard(
                     title: "Connection",
                     value: store.localProxyRunning ? "Connected" : "Disconnected",
-                    caption: store.localProxyRunning ? store.localProxySummary : "Local listeners stopped",
+                    caption: store.localProxyRunning ? "Leaf · \(store.localProxySummary)" : "Leaf proxy stopped",
                     systemImage: "power",
                     color: store.localProxyRunning ? .green : .secondary,
                     actionTitle: store.localProxyRunning ? "Stop" : "Start",
@@ -410,10 +410,10 @@ struct OverviewView: View {
                     color: systemProxyColor
                 )
                 OverviewStatusCard(
-                    title: "Takeover Mode",
-                    value: store.localProxyRunning ? "Enabled" : "Standby",
-                    caption: "Local HTTP and SOCKS5",
-                    systemImage: "point.3.connected.trianglepath.dotted",
+                    title: "Engine",
+                    value: store.localProxyRunning ? "leaf" : "Standby",
+                    caption: store.localProxyRunning ? "HTTP \(store.proxyListenPort) · SOCKS5 \(store.socksListenPort)" : "Embedded Rust proxy",
+                    systemImage: "cpu",
                     color: store.localProxyRunning ? .green : .secondary
                 )
                 OverviewStatusCard(
@@ -445,7 +445,7 @@ struct OverviewView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This saves the current system proxy as a restore point, starts local listeners, and changes the selected macOS network service to use 127.0.0.1:\(store.proxyListenPort) for HTTP/HTTPS and 127.0.0.1:\(store.socksListenPort) for SOCKS5.")
+            Text("This saves the current system proxy as a restore point, starts the embedded leaf engine on 127.0.0.1:\(store.proxyListenPort) (HTTP/HTTPS) and 127.0.0.1:\(store.socksListenPort) (SOCKS5), and updates the selected macOS network service to use those ports.")
         }
         .confirmationDialog("Stop blaze?", isPresented: $showingStopConfirmation) {
             Button("Stop Proxy", role: .destructive) {
@@ -453,7 +453,7 @@ struct OverviewView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This stops local listeners and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to blaze's local ports.")
+            Text("This stops the leaf engine and restores the saved system proxy settings when available. If no restore point exists, it only disables system proxy settings that currently point to blaze's local ports.")
         }
     }
 
@@ -3105,7 +3105,7 @@ struct LogsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
-                Header(title: "Logs", subtitle: "\(store.proxyEvents.count) recent local proxy events")
+                Header(title: "Logs", subtitle: "\(store.proxyEvents.count) recent leaf + startup events")
                 Spacer()
                 Button {
                     Task { await store.refreshProxyEvents() }
@@ -3145,7 +3145,7 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Header(title: "Settings", subtitle: "Routing, local listeners, system proxy, and export")
+            Header(title: "Settings", subtitle: "Routing, leaf engine, system proxy, and export")
 
             SectionPanel(title: "Routing", icon: "point.topleft.down.curvedto.point.bottomright.up") {
                 VStack(alignment: .leading, spacing: 12) {
