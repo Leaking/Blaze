@@ -17,13 +17,13 @@ struct BlazeApp: App {
             BlazeRedesignView()
                 .environmentObject(store)
                 .tint(.blue)
-                .frame(minWidth: 1100, minHeight: 720)
+                .frame(minWidth: 720, minHeight: 640)
                 .task {
                     appDelegate.store = store
                     store.loadInitialProfile()
                 }
         }
-        .defaultSize(width: 1240, height: 820)
+        .defaultSize(width: 820, height: 760)
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(after: .newItem) {
