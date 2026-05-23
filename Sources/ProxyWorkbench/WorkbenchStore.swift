@@ -3189,10 +3189,9 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
-    // Both startLocalProxyServer / startLocalSocksServer now delegate to leaf,
-    // which serves HTTP and SOCKS5 in one process. The Swift LocalHTTPProxyServer
-    // and LocalSOCKS5ProxyServer are retained as dependencies but no longer
-    // instantiated — they will be removed once all callers migrate.
+    // startLocalProxyServer / startLocalSocksServer both delegate to leaf,
+    // which serves HTTP and SOCKS5 in one subprocess. Kept as thin wrappers
+    // because menu commands and persisted preferences still reference them.
     func startLocalProxyServer() async {
         await ensureLeafRunning()
     }
