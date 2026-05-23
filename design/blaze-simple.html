@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>blaze · refined</title>
+<style>
+  :root {
+    --bg: #F2F2F4;
+    --window-bg: #FFFFFF;
+    --card-bg: #FFFFFF;
+    --card-bg-inset: #F7F7F9;
+    --text: #1D1D1F;
+    --text-secondary: #6E6E73;
+    --text-tertiary: #A6A6AA;
+    --border: rgba(0, 0, 0, 0.07);
+    --border-strong: rgba(0, 0, 0, 0.12);
+    --accent: #007AFF;
+    --accent-soft: rgba(0, 122, 255, 0.10);
+    --accent-tint: rgba(0, 122, 255, 0.06);
+    --positive: #34C759;
+    --positive-soft: rgba(52, 199, 89, 0.12);
+    --warning: #FF9500;
+    --warning-soft: rgba(255, 149, 0, 0.13);
+    --danger: #FF3B30;
+    --danger-soft: rgba(255, 59, 48, 0.12);
+    --pill-bg: #ECECEE;
+    --hero-from: #E5F0FF;
+    --hero-to:   #F0F7FF;
+    --hero-fg:   #0A4FB3;
+    --hairline-shadow: 0 0 0 0.5px rgba(0,0,0,0.08);
+    --shadow-window:
+      0 0 0 0.5px rgba(0,0,0,0.10),
+      0 18px 60px rgba(0,0,0,0.18),
+      0 38px 90px rgba(0,0,0,0.10);
+    --shadow-card:
+      0 0 0 0.5px rgba(0,0,0,0.06),
+      0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  .theme-dark {
+    --bg: #1A1A1C;
+    --window-bg: #1C1C1E;
+    --card-bg: #232325;
+    --card-bg-inset: #2A2A2D;
+    --text: #F5F5F7;
+    --text-secondary: #B0B0B5;
+    --text-tertiary: #6F6F75;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.15);
+    --accent: #0A84FF;
+    --accent-soft: rgba(10, 132, 255, 0.18);
+    --accent-tint: rgba(10, 132, 255, 0.10);
+    --positive: #30D158;
+    --positive-soft: rgba(48, 209, 88, 0.18);
+    --warning: #FF9F0A;
+    --warning-soft: rgba(255, 159, 10, 0.18);
+    --danger: #FF453A;
+    --danger-soft: rgba(255, 69, 58, 0.18);
+    --pill-bg: rgba(255,255,255,0.08);
+    --hero-from: #11315B;
+    --hero-to:   #0B254A;
+    --hero-fg:   #B6D2FF;
+    --hairline-shadow: 0 0 0 0.5px rgba(255,255,255,0.07);
+    --shadow-window:
+      0 0 0 0.5px rgba(0,0,0,0.4),
+      0 28px 80px rgba(0,0,0,0.55),
+      0 56px 120px rgba(0,0,0,0.4);
+    --shadow-card:
+      0 0 0 0.5px rgba(255,255,255,0.05),
+      0 1px 2px rgba(0,0,0,0.3);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: linear-gradient(180deg, #ECECEE, #DCDCDF);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+                 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1D1D1F;
+    min-height: 100vh;
+  }
+
+  .page {
+    display: flex;
+    flex-direction: row;
+    gap: 60px;
+    padding: 60px 40px;
+    justify-content: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .stack { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  .caption {
+    font-size: 12px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: #6E6E73;
+    font-weight: 600;
+  }
+  .stack.dark .caption { color: #98989D; }
+
+  /* ─── Window ────────────────────────────────────── */
+  .window {
+    width: 820px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--window-bg);
+    box-shadow: var(--shadow-window);
+    color: var(--text);
+  }
+  .window.dark { background: #1C1C1E; }
+
+  .titlebar {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 16px;
+    background: var(--window-bg);
+    border-bottom: 0.5px solid var(--border);
+  }
+  .dots { display: flex; gap: 8px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #FF5F57; }
+  .dot.y { background: #FEBC2E; }
+  .dot.g { background: #28C840; }
+  .title-text {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-secondary);
+    text-align: center;
+    flex: 1;
+  }
+
+  .body {
+    background: var(--bg);
+    padding: 24px 28px 28px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .window.dark .body { background: #1A1A1C; }
+
+  /* ─── Hero ────────────────────────────────────── */
+  .hero {
+    position: relative;
+    border-radius: 12px;
+    padding: 22px 24px;
+    background: linear-gradient(135deg, var(--hero-from), var(--hero-to));
+    color: var(--hero-fg);
+    box-shadow: var(--hairline-shadow);
+    overflow: hidden;
+  }
+  .hero::after {
+    content: '';
+    position: absolute;
+    width: 240px; height: 240px;
+    right: -60px; top: -110px;
+    background: radial-gradient(closest-side, rgba(255,255,255,0.45), transparent);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .window.dark .hero::after { opacity: 0.18; }
+
+  .hero-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  /* big slim switch */
+  .switch {
+    width: 56px;
+    height: 32px;
+    border-radius: 16px;
+    position: relative;
+    flex-shrink: 0;
+    transition: background 200ms ease;
+  }
+  .switch.on { background: var(--positive); }
+  .switch.off { background: #C7C7CC; }
+  .window.dark .switch.off { background: #3A3A3C; }
+  .switch::after {
+    content: '';
+    position: absolute;
+    width: 26px; height: 26px;
+    top: 3px;
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.06);
+    transition: left 200ms ease;
+  }
+  .switch.on::after  { left: 27px; }
+  .switch.off::after { left: 3px; }
+
+  .hero-text { flex: 1; }
+  .hero-title {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px 0;
+  }
+  .hero-subtitle {
+    font-size: 12.5px;
+    opacity: 0.82;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+
+  .hero-stat {
+    text-align: right;
+  }
+  .hero-stat-up {
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.75;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .hero-stat-value {
+    font-size: 14px;
+    font-weight: 600;
+    font-feature-settings: "tnum";
+    margin-top: 2px;
+  }
+
+  /* ─── Section headers ──────────────────────────── */
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0 6px;
+    margin-bottom: -4px;
+  }
+  .section-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .section-action {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--accent);
+    cursor: default;
+  }
+
+  /* ─── Card / Cell list ─────────────────────────── */
+  .card {
+    background: var(--card-bg);
+    border-radius: 10px;
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+
+  /* ─── Mode segmented ───────────────────────────── */
+  .mode {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    padding: 4px;
+    gap: 1px;
+    background: var(--pill-bg);
+    border-radius: 10px;
+  }
+  .mode-cell {
+    padding: 10px 14px;
+    border-radius: 7px;
+    text-align: left;
+    cursor: default;
+  }
+  .mode-cell .name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .mode-cell .hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    letter-spacing: -0.005em;
+  }
+  .mode-cell.selected {
+    background: var(--card-bg);
+    box-shadow: var(--shadow-card);
+  }
+  .mode-cell.selected .name { font-weight: 600; }
+
+  /* ─── Cell rows ───────────────────────────────── */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 11px 16px;
+    border-top: 0.5px solid var(--border);
+    cursor: default;
+  }
+  .row:first-child { border-top: 0; }
+  .row:hover { background: var(--accent-tint); }
+
+  .row .radio {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid var(--border-strong);
+  }
+  .row.active .radio {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 5.5px, white 5.5px 7px, transparent 7px);
+  }
+  .window.dark .row.active .radio {
+    background: radial-gradient(circle, var(--accent) 0 5.5px, #232325 5.5px 7px, transparent 7px);
+  }
+
+  .row .flag { font-size: 16px; line-height: 1; }
+  .row .name-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .row .name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row.active .name { font-weight: 600; }
+  .row .meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-feature-settings: "tnum";
+    letter-spacing: -0.005em;
+  }
+
+  /* latency bar */
+  .lat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    width: 130px;
+    justify-content: flex-end;
+  }
+  .lat-bar {
+    width: 56px; height: 5px;
+    border-radius: 3px;
+    background: var(--card-bg-inset);
+    overflow: hidden;
+  }
+  .lat-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+  }
+  .lat-bar-fill.fast { background: var(--positive); }
+  .lat-bar-fill.med  { background: var(--warning); }
+  .lat-bar-fill.slow { background: var(--danger); }
+  .lat-ms {
+    width: 56px;
+    text-align: right;
+    font-size: 11.5px;
+    font-feature-settings: "tnum";
+    color: var(--text-secondary);
+  }
+  .lat-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+  .lat-dot.fast { background: var(--positive); }
+  .lat-dot.med  { background: var(--warning); }
+  .lat-dot.slow { background: var(--danger); }
+
+  /* ─── Profiles ──────────────────────────────── */
+  .profile-name { font-weight: 500; color: var(--text); }
+  .profile-meta { font-size: 11px; color: var(--text-tertiary); }
+  .profile-actions { display: flex; gap: 4px; }
+  .icon-btn {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    cursor: default;
+  }
+  .icon-btn:hover { background: var(--card-bg-inset); color: var(--text); }
+  .icon-btn svg { width: 14px; height: 14px; }
+  .badge-active {
+    background: var(--positive-soft);
+    color: var(--positive);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+  }
+
+  /* ─── Search input ─────────────────────────────── */
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--card-bg-inset);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 0.5px var(--border);
+    margin-bottom: 10px;
+  }
+  .search svg {
+    width: 13px; height: 13px;
+    color: var(--text-tertiary);
+  }
+  .search input {
+    background: transparent;
+    border: 0;
+    outline: 0;
+    flex: 1;
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .search input::placeholder { color: var(--text-tertiary); }
+
+  /* ─── Rule row ──────────────────────────────── */
+  .rule-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 130px;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 16px;
+    border-top: 0.5px solid var(--border);
+    font-size: 11.5px;
+  }
+  .rule-row:first-child { border-top: 0; }
+  .kind {
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    width: max-content;
+  }
+  .kind.domain  { background: var(--accent-soft);   color: var(--accent); }
+  .kind.ip      { background: var(--positive-soft); color: var(--positive); }
+  .kind.geo     { background: var(--warning-soft);  color: var(--warning); }
+  .kind.port    { background: rgba(175, 82, 222, 0.15); color: #AF52DE; }
+  .kind.reject  { background: var(--danger-soft);   color: var(--danger); }
+  .kind.final   { background: var(--pill-bg);       color: var(--text-secondary); }
+  .rule-value {
+    font-family: "SF Mono", "Menlo", monospace;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .policy {
+    text-align: right;
+    font-weight: 600;
+    font-size: 11px;
+  }
+  .policy.direct { color: var(--text-secondary); }
+  .policy.proxy  { color: var(--accent); }
+  .policy.reject { color: var(--danger); }
+
+  /* ─── Import sheet (modal) ────────────────── */
+  .sheet {
+    width: 420px;
+    border-radius: 12px;
+    background: var(--card-bg);
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.12),
+      0 20px 70px rgba(0,0,0,0.25);
+    padding: 22px 22px 18px 22px;
+    color: var(--text);
+  }
+  .sheet h3 {
+    margin: 0 0 4px 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .sheet .desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 18px;
+  }
+  .tab-row {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    background: var(--pill-bg);
+    border-radius: 8px;
+    margin-bottom: 14px;
+  }
+  .tab {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: default;
+    flex: 1;
+    text-align: center;
+  }
+  .tab.active {
+    background: var(--card-bg);
+    color: var(--text);
+    box-shadow: var(--shadow-card);
+    font-weight: 600;
+  }
+  .field-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    letter-spacing: -0.005em;
+  }
+  .field-input {
+    width: 100%;
+    padding: 9px 11px;
+    background: var(--card-bg-inset);
+    border: 0;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: "SF Mono", "Menlo", monospace;
+    color: var(--text);
+    box-shadow: inset 0 0 0 0.5px var(--border);
+    outline: none;
+  }
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .check {
+    width: 14px; height: 14px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+  }
+  .sheet-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .btn {
+    padding: 6px 14px;
+    font-size: 12.5px;
+    font-weight: 500;
+    border-radius: 6px;
+    cursor: default;
+  }
+  .btn.secondary {
+    background: var(--card-bg-inset);
+    color: var(--text);
+  }
+  .btn.primary {
+    background: var(--accent);
+    color: white;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  }
+
+  /* tiny SVG icons reset */
+  svg { display: block; }
+
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- LIGHT MODE WINDOW -->
+  <div class="stack">
+    <div class="caption">Light · main window</div>
+    <div class="window">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title-text">blaze</div>
+        <div style="width:54px"></div>
+      </div>
+
+      <div class="body">
+
+        <!-- 1. HERO -->
+        <div class="hero">
+          <div class="hero-row">
+            <div class="switch on"></div>
+            <div class="hero-text">
+              <p class="hero-title">Routing through Hong Kong 10</p>
+              <p class="hero-subtitle">leaf · 4h 12m · HTTP 19080 · SOCKS5 19081</p>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-up">↑↓ active</div>
+              <div class="hero-stat-value">12 conns · 47 KB/s</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. MODE -->
+        <div>
+          <div class="section-head">
+            <div class="section-title">Mode</div>
+          </div>
+          <div class="mode" style="margin-top:10px">
+            <div class="mode-cell">
+              <div class="name">Direct</div>
+              <div class="hint">Skip all proxies</div>
+            </div>
+            <div class="mode-cell selected">
+              <div class="name">Rule-based</div>
+              <div class="hint">Match destination → policy</div>
+            </div>
+            <div class="mode-cell">
+              <div class="name">Global</div>
+              <div class="hint">Everything via one node</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. NODES -->
+        <div>
+          <div class="section-head">
+            <div class="section-title">Node · sorted by latency</div>
+            <div class="section-action">Probe latency  ⌘L</div>
+          </div>
+          <div class="card" style="margin-top:10px">
+            <div class="row active">
+              <div class="radio"></div>
+              <div class="flag">🇭🇰</div>
+              <div class="name-col">
+                <div class="name">Hong Kong 10</div>
+                <div class="meta">trojan · 443</div>
+              </div>
+              <div class="lat">
+                <div class="lat-dot fast"></div>
+                <div class="lat-bar"><div class="lat-bar-fill fast" style="width:90%"></div></div>
+                <div class="lat-ms">86 ms</div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="radio"></div>
+              <div class="flag">🇸🇬</div>
+              <div class="name-col">
+                <div class="name">Singapore 1</div>
+                <div class="meta">trojan · 443</div>
+              </div>
+              <div class="lat">
+                <div class="lat-dot med"></div>
+                <div class="lat-bar"><div class="lat-bar-fill med" style="width:60%"></div></div>
+                <div class="lat-ms">132 ms</div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="radio"></div>
+              <div class="flag">🇯🇵</div>
+              <div class="name-col">
+                <div class="name">Tokyo 2</div>
+                <div class="meta">trojan · 443</div>
+              </div>
+              <div class="lat">
+                <div class="lat-dot med"></div>
+                <div class="lat-bar"><div class="lat-bar-fill med" style="width:48%"></div></div>
+                <div class="lat-ms">174 ms</div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="radio"></div>
+              <div class="flag">🇺🇸</div>
+              <div class="name-col">
+                <div class="name">Los Angeles 3</div>
+                <div class="meta">trojan · 443</div>
+              </div>
+              <div class="lat">
+                <div class="lat-dot slow"></div>
+                <div class="lat-bar"><div class="lat-bar-fill slow" style="width:18%"></div></div>
+                <div class="lat-ms">316 ms</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. PROFILES -->
+        <div>
+          <div class="section-head">
+            <div class="section-title">Profiles · 3 saved</div>
+            <div class="section-action">+ Add profile  ⌘N</div>
+          </div>
+          <div class="card" style="margin-top:10px">
+            <div class="row active">
+              <div class="radio"></div>
+              <div class="name-col">
+                <div class="name">tikiki · personal</div>
+                <div class="meta">https://sub.tikiki.app/sub  ·  4 nodes · 7,536 rules  ·  synced 12 min ago</div>
+              </div>
+              <span class="badge-active">ACTIVE</span>
+              <div class="profile-actions">
+                <div class="icon-btn" title="Refresh">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 0 1 10-3.2"/><path d="M13.5 8a5.5 5.5 0 0 1-10 3.2"/><path d="M12.5 1.5v3.3h-3.3"/><path d="M3.5 14.5v-3.3h3.3"/></svg>
+                </div>
+                <div class="icon-btn" title="Rename">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13l-2.7.7.7-2.7 8.5-8.5z"/></svg>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="radio"></div>
+              <div class="name-col">
+                <div class="name">homelab · self-hosted</div>
+                <div class="meta">file · ~/Documents/homelab.conf  ·  2 nodes · 84 rules  ·  used 2 d ago</div>
+              </div>
+              <div class="profile-actions">
+                <div class="icon-btn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13l-2.7.7.7-2.7 8.5-8.5z"/></svg></div>
+                <div class="icon-btn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10"/><path d="M5 4.5V3a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 11 3v1.5"/><path d="M4.5 4.5v9A1.5 1.5 0 0 0 6 15h4a1.5 1.5 0 0 0 1.5-1.5v-9"/></svg></div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="radio"></div>
+              <div class="name-col">
+                <div class="name">starter sample</div>
+                <div class="meta">bundled · 3 nodes · 18 rules  ·  built-in</div>
+              </div>
+              <div class="profile-actions">
+                <div class="icon-btn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13l-2.7.7.7-2.7 8.5-8.5z"/></svg></div>
+                <div class="icon-btn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10"/><path d="M5 4.5V3a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 11 3v1.5"/><path d="M4.5 4.5v9A1.5 1.5 0 0 0 6 15h4a1.5 1.5 0 0 0 1.5-1.5v-9"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. RULES -->
+        <div>
+          <div class="section-head">
+            <div class="section-title">Rules · 7,536 loaded</div>
+            <div class="section-action">Refresh sources  ⌘R</div>
+          </div>
+          <div class="search">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M13 13l-2.7-2.7"/></svg>
+            <input placeholder="Filter by value, policy, or kind…" />
+          </div>
+          <div class="card">
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="rule-value">api.telegram.org</span>
+              <span class="policy proxy">Hong Kong 10</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind domain">DOMAIN-SFX</span>
+              <span class="rule-value">claude.ai</span>
+              <span class="policy proxy">Hong Kong 10</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind ip">IP-CIDR</span>
+              <span class="rule-value">10.0.0.0/8</span>
+              <span class="policy direct">DIRECT</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind geo">GEOIP</span>
+              <span class="rule-value">CN</span>
+              <span class="policy direct">DIRECT</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind reject">URL-REGEX</span>
+              <span class="rule-value">.*\.googlesyndication\.com</span>
+              <span class="policy reject">REJECT</span>
+            </div>
+            <div class="rule-row">
+              <span class="kind final">FINAL</span>
+              <span class="rule-value">—</span>
+              <span class="policy proxy">Hong Kong 10</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- DARK MODE WINDOW + IMPORT SHEET -->
+  <div class="stack dark">
+    <div class="caption" style="color:#98989D">Dark · with import sheet open</div>
+    <div style="display:flex; gap:30px; align-items:flex-start;">
+      <div class="window dark theme-dark">
+        <div class="titlebar">
+          <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+          <div class="title-text">blaze</div>
+          <div style="width:54px"></div>
+        </div>
+        <div class="body">
+
+          <div class="hero">
+            <div class="hero-row">
+              <div class="switch off"></div>
+              <div class="hero-text">
+                <p class="hero-title">Blaze is off</p>
+                <p class="hero-subtitle">Flip the switch to start the engine and packet tunnel</p>
+              </div>
+              <div class="hero-stat">
+                <div class="hero-stat-up">profile</div>
+                <div class="hero-stat-value">tikiki · 4/7,536</div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-head"><div class="section-title">Mode</div></div>
+            <div class="mode" style="margin-top:10px">
+              <div class="mode-cell"><div class="name">Direct</div><div class="hint">Skip all proxies</div></div>
+              <div class="mode-cell selected"><div class="name">Rule-based</div><div class="hint">Match → policy</div></div>
+              <div class="mode-cell"><div class="name">Global</div><div class="hint">Everything via one</div></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-head">
+              <div class="section-title">Profiles · 3 saved</div>
+              <div class="section-action">+ Add profile</div>
+            </div>
+            <div class="card" style="margin-top:10px">
+              <div class="row active">
+                <div class="radio"></div>
+                <div class="name-col">
+                  <div class="name">tikiki · personal</div>
+                  <div class="meta">https://sub.tikiki.app/sub  ·  4 nodes · 7,536 rules</div>
+                </div>
+                <span class="badge-active">ACTIVE</span>
+              </div>
+              <div class="row">
+                <div class="radio"></div>
+                <div class="name-col">
+                  <div class="name">homelab · self-hosted</div>
+                  <div class="meta">file · ~/Documents/homelab.conf  ·  2 nodes · 84 rules</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- import sheet floating -->
+      <div class="theme-dark" style="margin-top:120px;">
+        <div class="sheet">
+          <h3>Add profile</h3>
+          <p class="desc">Import a Surge-style config from a URL, a local file, or paste it directly.</p>
+          <div class="tab-row">
+            <div class="tab active">From URL</div>
+            <div class="tab">From file</div>
+            <div class="tab">Paste</div>
+          </div>
+
+          <label class="field-label">Subscription URL</label>
+          <input class="field-input" value="https://sub.tikiki.app/sub?token=••••••" />
+
+          <label class="field-label" style="margin-top:12px">Name (optional)</label>
+          <input class="field-input" placeholder="e.g. tikiki" />
+
+          <div class="checkbox-row">
+            <span class="check">✓</span>
+            Also import rule sets referenced by this profile
+          </div>
+          <div class="checkbox-row">
+            <span class="check" style="background:transparent; box-shadow: inset 0 0 0 1px var(--border-strong);"></span>
+            Activate immediately after import
+          </div>
+
+          <div class="sheet-actions">
+            <span class="btn secondary">Cancel</span>
+            <span class="btn primary">Import</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

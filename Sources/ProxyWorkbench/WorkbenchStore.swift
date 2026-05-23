@@ -278,6 +278,8 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var profile: ProxyProfile = .empty
     @Published var sourceText: String = ""
     @Published var remoteProfileURLText: String = ""
+    @Published private(set) var savedProfiles: [SavedProfile] = []
+    @Published private(set) var activeProfileID: UUID? = nil
     @Published var ruleProbeText: String = "www.apple.com"
     @Published var networkServiceName: String = "Wi-Fi"
     @Published private(set) var routeProbeResult: RouteProbeResult?
@@ -613,6 +615,8 @@ final class WorkbenchStore: ObservableObject {
     func loadInitialProfile() {
         guard !didLoadInitialProfile else { return }
         didLoadInitialProfile = true
+
+        loadSavedProfilesFromDefaults()
 
         remoteProfileURLText = defaults.string(forKey: PersistenceKey.remoteProfileURL) ?? ""
         let savedHTTPPort = defaults.integer(forKey: PersistenceKey.httpPort)
@@ -2776,8 +2780,190 @@ final class WorkbenchStore: ObservableObject {
         defaults.set(proxyRoutingMode.rawValue, forKey: PersistenceKey.proxyRoutingMode)
         defaults.set(globalProxyPolicy, forKey: PersistenceKey.globalProxyPolicy)
         defaults.set(Array(favoriteProxyNames).sorted(), forKey: PersistenceKey.favoriteProxyNames)
+        persistSavedProfilesToDefaults()
         persistRuleSetCache()
         persistSystemProxyRestorePoint()
+    }
+
+    // MARK: - Profile library (config manager)
+
+    private func loadSavedProfilesFromDefaults() {
+        if let data = defaults.data(forKey: PersistenceKey.savedProfiles),
+           let decoded = try? JSONDecoder().decode([SavedProfile].self, from: data) {
+            savedProfiles = decoded
+        } else {
+            savedProfiles = []
+        }
+        if let uuidString = defaults.string(forKey: PersistenceKey.activeProfileID) {
+            activeProfileID = UUID(uuidString: uuidString)
+        } else {
+            activeProfileID = nil
+        }
+    }
+
+    private func persistSavedProfilesToDefaults() {
+        if let data = try? JSONEncoder().encode(savedProfiles) {
+            defaults.set(data, forKey: PersistenceKey.savedProfiles)
+        }
+        if let id = activeProfileID {
+            defaults.set(id.uuidString, forKey: PersistenceKey.activeProfileID)
+        } else {
+            defaults.removeObject(forKey: PersistenceKey.activeProfileID)
+        }
+    }
+
+    /// Save the current sourceText as a named entry in the library and activate it.
+    @discardableResult
+    func saveCurrentAsProfile(name: String, sourceURL: String? = nil) -> SavedProfile? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusText = "Save failed: enter a name"
+            return nil
+        }
+        guard !sourceText.isEmpty else {
+            statusText = "Save failed: no profile loaded"
+            return nil
+        }
+        let now = Date()
+        if let idx = savedProfiles.firstIndex(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            savedProfiles[idx].sourceText = sourceText
+            savedProfiles[idx].sourceURL = sourceURL ?? savedProfiles[idx].sourceURL
+            savedProfiles[idx].lastUsedAt = now
+            activeProfileID = savedProfiles[idx].id
+            saveLocalState()
+            statusText = "Updated profile \(savedProfiles[idx].name)"
+            return savedProfiles[idx]
+        }
+        let entry = SavedProfile(
+            name: trimmed,
+            sourceText: sourceText,
+            sourceURL: sourceURL,
+            importedAt: now,
+            lastUsedAt: now
+        )
+        savedProfiles.append(entry)
+        activeProfileID = entry.id
+        saveLocalState()
+        statusText = "Saved profile \(entry.name)"
+        return entry
+    }
+
+    /// Make a saved profile the active one and parse it.
+    func activateSavedProfile(_ profileID: UUID) {
+        guard let idx = savedProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+        sourceText = savedProfiles[idx].sourceText
+        if let url = savedProfiles[idx].sourceURL { remoteProfileURLText = url }
+        savedProfiles[idx].lastUsedAt = Date()
+        activeProfileID = savedProfiles[idx].id
+        parseSource(persist: true)
+        Task {
+            if !profile.rules.filter({ $0.type == "RULE-SET" }).isEmpty, importedRuleSetRuleCount == 0 {
+                await importRuleSets()
+            }
+        }
+        statusText = "Activated \(savedProfiles[idx].name)"
+    }
+
+    func deleteSavedProfile(_ profileID: UUID) {
+        guard let idx = savedProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+        let removed = savedProfiles.remove(at: idx)
+        if activeProfileID == profileID { activeProfileID = nil }
+        saveLocalState()
+        statusText = "Deleted profile \(removed.name)"
+    }
+
+    func renameSavedProfile(_ profileID: UUID, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { statusText = "Rename failed: enter a name"; return }
+        guard let idx = savedProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+        if savedProfiles.contains(where: { $0.id != profileID && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            statusText = "Rename failed: name already exists"
+            return
+        }
+        savedProfiles[idx].name = trimmed
+        saveLocalState()
+        statusText = "Renamed to \(trimmed)"
+    }
+
+    /// Re-fetches the URL behind a saved profile and overwrites it.
+    func refreshSavedProfile(_ profileID: UUID) async {
+        guard let idx = savedProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+        guard let urlString = savedProfiles[idx].sourceURL,
+              let url = URL(string: urlString) else {
+            statusText = "Refresh failed: profile has no source URL"
+            return
+        }
+        remoteImportInProgress = true
+        defer { remoteImportInProgress = false }
+        do {
+            let text = try await RemoteProfileImporter.importText(from: url)
+            savedProfiles[idx].sourceText = text
+            savedProfiles[idx].lastUsedAt = Date()
+            if activeProfileID == profileID {
+                sourceText = text
+                parseSource(persist: false)
+            }
+            saveLocalState()
+            statusText = "Refreshed \(savedProfiles[idx].name)"
+        } catch {
+            statusText = "Refresh failed: \(error)"
+        }
+    }
+
+    /// Import from URL — replaces the current sourceText and saves it to the library
+    /// under the supplied name (or a derived one), then activates it.
+    func importProfileFromURL(_ urlString: String, named: String? = nil, importRuleSets shouldImportRules: Bool = true, activate: Bool = true) async {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed) else {
+            statusText = "Import failed: enter an http or https URL"
+            return
+        }
+        remoteImportInProgress = true
+        statusText = "Downloading \(url.host ?? trimmed)…"
+        defer { remoteImportInProgress = false }
+        do {
+            let text = try await RemoteProfileImporter.importText(from: url)
+            sourceText = text
+            remoteProfileURLText = trimmed
+            parseSource(persist: true)
+            let derivedName = (named?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? (url.host ?? "Imported")
+            _ = saveCurrentAsProfile(name: derivedName, sourceURL: trimmed)
+            if shouldImportRules {
+                let n = await importRuleSetsForCurrentProfile()
+                statusText = n > 0
+                    ? "Imported \(derivedName) and \(n) rule-set rules"
+                    : "Imported \(derivedName): \(profileSummary.shortDescription)"
+            }
+            _ = activate
+        } catch {
+            statusText = "Import failed: \(error)"
+        }
+    }
+
+    /// Import from a local file URL — saves under the supplied name.
+    func importProfileFromFile(_ url: URL, named: String? = nil) {
+        do {
+            let data = try Data(contentsOf: url)
+            let text = try ProfileSourceDecoder.decodedText(from: data)
+            sourceText = text
+            parseSource(persist: true)
+            let derivedName = (named?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? url.deletingPathExtension().lastPathComponent
+            _ = saveCurrentAsProfile(name: derivedName, sourceURL: nil)
+            statusText = "Imported \(derivedName)"
+        } catch {
+            statusText = "Import failed: \(error)"
+        }
+    }
+
+    /// Import from pasted Surge-style text.
+    func importProfileFromText(_ text: String, named: String) {
+        let trimmedName = named.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { statusText = "Import failed: enter a name"; return }
+        guard !text.isEmpty else { statusText = "Import failed: paste a profile"; return }
+        sourceText = text
+        parseSource(persist: true)
+        _ = saveCurrentAsProfile(name: trimmedName, sourceURL: nil)
+        statusText = "Imported \(trimmedName)"
     }
 
     func clearLocalState() {
@@ -3465,8 +3651,10 @@ private enum PersistenceKey {
     static let proxyRoutingMode = "policy.routingMode"
     static let globalProxyPolicy = "policy.globalProxyPolicy"
     static let favoriteProxyNames = "proxies.favoriteNames"
+    static let savedProfiles = "profile.library"
+    static let activeProfileID = "profile.activeID"
 
-    static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy, favoriteProxyNames]
+    static let all = [sourceText, remoteProfileURL, httpPort, socksPort, selectedPolicies, networkServiceName, systemProxyRestorePoint, proxyRoutingMode, globalProxyPolicy, favoriteProxyNames, savedProfiles, activeProfileID]
 }
 
 private struct RuleSetCache: Codable {
