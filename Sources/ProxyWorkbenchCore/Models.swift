@@ -274,3 +274,33 @@ private extension Dictionary where Key == String, Value == String {
         return result
     }
 }
+
+public struct SavedProfile: Identifiable, Codable, Equatable, Hashable {
+    public var id: UUID
+    public var name: String
+    public var sourceText: String
+    public var sourceURL: String?
+    public var importedAt: Date
+    public var lastUsedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        sourceText: String,
+        sourceURL: String? = nil,
+        importedAt: Date = Date(),
+        lastUsedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.sourceText = sourceText
+        self.sourceURL = sourceURL
+        self.importedAt = importedAt
+        self.lastUsedAt = lastUsedAt
+    }
+
+    public var displaySource: String {
+        if let url = sourceURL, !url.isEmpty { return url }
+        return "Local"
+    }
+}

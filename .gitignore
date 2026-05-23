@@ -13,3 +13,8 @@ DerivedData/
 
 # Local build artifacts
 build/
+Vendor/HevSocks5Tunnel/macos-*/
+Vendor/Leaf/leaf/
+Vendor/Leaf/macos-*/
+*.log
+/notarize-*.log

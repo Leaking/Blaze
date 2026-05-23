@@ -180,7 +180,7 @@ final class DNSFakeIPStore: @unchecked Sendable {
         var lastAccess: Date
     }
 
-    private static let baseAddress: UInt32 = 0xC6120001
+    private static let baseAddress: UInt32 = 0xC6120101
     private static let lastAddress: UInt32 = 0xC613FFFE
     private let queue = DispatchQueue(label: "com.chenhuazhao.blaze.tunnel.fake-ip")
     private let ttl: TimeInterval

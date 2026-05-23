@@ -51,19 +51,19 @@ public struct RuleEngine: Sendable {
     private func match(rule: ProxyRule, target: NormalizedRuleTarget) -> String? {
         switch rule.type {
         case "DOMAIN":
-            return target.hostOrInput == rule.value.lowercased() ? "Exact domain" : nil
+            return target.hostOrInput == RuleValueCache.lowercased(rule.value) ? "Exact domain" : nil
         case "DOMAIN-SUFFIX":
-            let suffix = rule.value.lowercased()
+            let suffix = RuleValueCache.lowercased(rule.value)
             if target.hostOrInput == suffix || target.hostOrInput.hasSuffix(".\(suffix)") {
                 return "Domain suffix"
             }
             return nil
         case "DOMAIN-KEYWORD":
-            return target.hostOrInput.contains(rule.value.lowercased()) ? "Domain keyword" : nil
+            return target.hostOrInput.contains(RuleValueCache.lowercased(rule.value)) ? "Domain keyword" : nil
         case "DOMAIN-WILDCARD":
             return wildcard(pattern: rule.value.lowercased(), matches: target.hostOrInput) ? "Domain wildcard" : nil
         case "URL-REGEX":
-            guard let regex = try? NSRegularExpression(pattern: rule.value, options: [.caseInsensitive]) else {
+            guard let regex = RuleValueCache.regex(for: rule.value, anchored: false) else {
                 return nil
             }
             let range = NSRange(target.original.startIndex..<target.original.endIndex, in: target.original)
@@ -74,7 +74,7 @@ public struct RuleEngine: Sendable {
             return ipv6CIDRContains(ip: target.hostOrInput, cidr: rule.value) ? "IPv6 CIDR" : nil
         case "DEST-PORT":
             guard let port = target.port else { return nil }
-            return portSet(rule.value).contains(port) ? "Destination port" : nil
+            return RuleValueCache.portSet(for: rule.value).contains(port) ? "Destination port" : nil
         case "FINAL", "MATCH":
             return "Fallback"
         default:
@@ -86,27 +86,12 @@ public struct RuleEngine: Sendable {
         let escaped = NSRegularExpression.escapedPattern(for: pattern)
             .replacingOccurrences(of: "\\*", with: ".*")
             .replacingOccurrences(of: "\\?", with: ".")
-        guard let regex = try? NSRegularExpression(pattern: "^\(escaped)$", options: [.caseInsensitive]) else {
+        let anchored = "^\(escaped)$"
+        guard let regex = RuleValueCache.regex(for: anchored, anchored: true) else {
             return false
         }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         return regex.firstMatch(in: value, range: range) != nil
-    }
-
-    private func portSet(_ value: String) -> Set<Int> {
-        var result = Set<Int>()
-        for part in value.split(separator: ";") {
-            if part.contains("-") {
-                let bounds = part.split(separator: "-", maxSplits: 1)
-                guard bounds.count == 2, let lower = Int(bounds[0]), let upper = Int(bounds[1]), lower <= upper else {
-                    continue
-                }
-                result.formUnion(lower...upper)
-            } else if let port = Int(part) {
-                result.insert(port)
-            }
-        }
-        return result
     }
 
     private func ipv4CIDRContains(ip: String, cidr: String) -> Bool {
@@ -177,6 +162,64 @@ public struct RuleEngine: Sendable {
 
         return withUnsafeBytes(of: address) { Array($0) }
     }
+}
+
+enum RuleValueCache {
+    // NSCache is documented thread-safe; the values stored here are immutable
+    // and the cache only ever grows monotonically, so concurrent reads/writes
+    // are safe even without external synchronization.
+    nonisolated(unsafe) private static let regexCache = NSCache<NSString, NSRegularExpression>()
+    nonisolated(unsafe) private static let portSetCache = NSCache<NSString, NSNumberArray>()
+    nonisolated(unsafe) private static let lowercaseCache = NSCache<NSString, NSString>()
+
+    static func regex(for pattern: String, anchored: Bool) -> NSRegularExpression? {
+        let key = (anchored ? "A:" : "U:") + pattern as NSString
+        if let cached = regexCache.object(forKey: key) {
+            return cached
+        }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        regexCache.setObject(regex, forKey: key)
+        return regex
+    }
+
+    static func portSet(for value: String) -> Set<Int> {
+        let key = value as NSString
+        if let cached = portSetCache.object(forKey: key) {
+            return Set(cached.numbers.map(\.intValue))
+        }
+        var result = Set<Int>()
+        for part in value.split(separator: ";") {
+            if part.contains("-") {
+                let bounds = part.split(separator: "-", maxSplits: 1)
+                guard bounds.count == 2, let lower = Int(bounds[0]), let upper = Int(bounds[1]), lower <= upper else {
+                    continue
+                }
+                result.formUnion(lower...upper)
+            } else if let port = Int(part) {
+                result.insert(port)
+            }
+        }
+        let boxed = NSNumberArray(numbers: result.map(NSNumber.init(value:)))
+        portSetCache.setObject(boxed, forKey: key)
+        return result
+    }
+
+    static func lowercased(_ value: String) -> String {
+        let key = value as NSString
+        if let cached = lowercaseCache.object(forKey: key) {
+            return cached as String
+        }
+        let lower = value.lowercased()
+        lowercaseCache.setObject(lower as NSString, forKey: key)
+        return lower
+    }
+}
+
+private final class NSNumberArray: NSObject {
+    let numbers: [NSNumber]
+    init(numbers: [NSNumber]) { self.numbers = numbers }
 }
 
 private struct NormalizedRuleTarget: Sendable {

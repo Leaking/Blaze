@@ -17,6 +17,9 @@ SYSTEM_EXTENSIONS_DIR="$CONTENTS_DIR/Library/SystemExtensions"
 TUNNEL_EXTENSION_DIR="$SYSTEM_EXTENSIONS_DIR/$TUNNEL_BUNDLE_ID.systemextension"
 TUNNEL_CONTENTS_DIR="$TUNNEL_EXTENSION_DIR/Contents"
 TUNNEL_MACOS_DIR="$TUNNEL_CONTENTS_DIR/MacOS"
+TUNNEL_FRAMEWORKS_DIR="$TUNNEL_CONTENTS_DIR/Frameworks"
+HEV_LIBRARY_DIR="${BLAZE_HEV_LIBRARY_DIR:-$ROOT_DIR/Vendor/HevSocks5Tunnel/macos-arm64}"
+LEAF_BINARY="${BLAZE_LEAF_BINARY:-$ROOT_DIR/Vendor/Leaf/macos-arm64/leaf}"
 SIGN_IDENTITY="${BLAZE_SIGN_IDENTITY:-}"
 ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS="${BLAZE_ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS:-0}"
 APP_PROVISIONING_PROFILE="${BLAZE_APP_PROVISIONING_PROFILE:-}"
@@ -201,6 +204,49 @@ chmod +x "$MACOS_DIR/$APP_NAME"
 cp "$BUILD_DIR/arm64-apple-macosx/release/$TUNNEL_PRODUCT" "$TUNNEL_MACOS_DIR/$TUNNEL_PRODUCT"
 chmod +x "$TUNNEL_MACOS_DIR/$TUNNEL_PRODUCT"
 
+HEV_DYLIBS=()
+if [[ -d "$HEV_LIBRARY_DIR" ]]; then
+    shopt -s nullglob
+    HEV_DYLIBS=("$HEV_LIBRARY_DIR"/*.dylib)
+    shopt -u nullglob
+fi
+
+if [[ "${#HEV_DYLIBS[@]}" -eq 0 || ! -f "${HEV_DYLIBS[0]}" ]]; then
+    if [[ "${BLAZE_ALLOW_MISSING_HEV_DYLIB:-0}" == "1" ]]; then
+        echo "WARNING: HEV dylibs not found in $HEV_LIBRARY_DIR; bundle will have no HEV tunnel engine and Step 5 will fail at runtime." >&2
+    else
+        echo "ERROR: HEV dylibs not found in $HEV_LIBRARY_DIR." >&2
+        echo "       Run scripts/dev/build-hev-socks5-tunnel-dylibs.sh first, or set BLAZE_HEV_LIBRARY_DIR." >&2
+        echo "       To intentionally build a non-functional bundle, set BLAZE_ALLOW_MISSING_HEV_DYLIB=1." >&2
+        exit 1
+    fi
+else
+    mkdir -p "$TUNNEL_FRAMEWORKS_DIR"
+    cp "${HEV_DYLIBS[@]}" "$TUNNEL_FRAMEWORKS_DIR"/
+fi
+
+if [[ ! -f "$LEAF_BINARY" ]]; then
+    if [[ "${BLAZE_ALLOW_MISSING_LEAF:-0}" == "1" ]]; then
+        echo "WARNING: leaf binary not found at $LEAF_BINARY; host app will have no proxy listener." >&2
+    else
+        echo "ERROR: leaf binary not found at $LEAF_BINARY." >&2
+        echo "       Build it with: (cd Vendor/Leaf/leaf && cargo build -p leaf-cli --release) && cp Vendor/Leaf/leaf/target/release/leaf $LEAF_BINARY" >&2
+        echo "       To intentionally build a non-functional bundle, set BLAZE_ALLOW_MISSING_LEAF=1." >&2
+        exit 1
+    fi
+else
+    cp "$LEAF_BINARY" "$RESOURCES_DIR/leaf"
+    chmod +x "$RESOURCES_DIR/leaf"
+fi
+
+# Bundle notify-resume.sh so the in-app watchdog recovery path can ping
+# the user on Telegram when it kicks in (the external watchdog used in
+# test scripts can call the repo path directly).
+if [[ -f "$ROOT_DIR/scripts/dev/notify-resume.sh" ]]; then
+    cp "$ROOT_DIR/scripts/dev/notify-resume.sh" "$RESOURCES_DIR/notify-resume.sh"
+    chmod +x "$RESOURCES_DIR/notify-resume.sh"
+fi
+
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string blaze" "$CONTENTS_DIR/Info.plist"
@@ -264,9 +310,29 @@ if [[ "$ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS" == "1" ]]; then
         [[ -n "$arg" ]] && CODESIGN_TIMESTAMP_ARGS+=("$arg")
     done < <(codesign_timestamp_args "$SIGN_IDENTITY")
 
+    if [[ -d "$TUNNEL_FRAMEWORKS_DIR" ]]; then
+        while IFS= read -r dylib; do
+            codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" "$dylib" >/dev/null
+        done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
+    fi
+
+    if [[ -f "$RESOURCES_DIR/leaf" ]]; then
+        codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" "$RESOURCES_DIR/leaf" >/dev/null
+    fi
+
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_TUNNEL_ENTITLEMENTS" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$SIGN_IDENTITY" --entitlements "$GENERATED_APP_ENTITLEMENTS" "$APP_DIR" >/dev/null
 else
+    if [[ -d "$TUNNEL_FRAMEWORKS_DIR" ]]; then
+        while IFS= read -r dylib; do
+            codesign --force --sign "$SIGN_IDENTITY" "$dylib" >/dev/null
+        done < <(find "$TUNNEL_FRAMEWORKS_DIR" -type f -name '*.dylib' -print)
+    fi
+
+    if [[ -f "$RESOURCES_DIR/leaf" ]]; then
+        codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES_DIR/leaf" >/dev/null
+    fi
+
     codesign --force --sign "$SIGN_IDENTITY" "$TUNNEL_EXTENSION_DIR" >/dev/null
     codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
     echo "Signed without restricted System Extension entitlements. Set BLAZE_ENABLE_SYSTEM_EXTENSION_ENTITLEMENTS=1 with a valid provisioning setup to test activation."

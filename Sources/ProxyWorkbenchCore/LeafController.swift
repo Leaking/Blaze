@@ -1,0 +1,547 @@
+import Darwin
+import Foundation
+import os.log
+
+private let leafLogger = Logger(subsystem: "com.chenhuazhao.blaze", category: "Leaf")
+
+/// Configuration that the controller materialises into a leaf `.conf` file
+/// before launching the binary. Values map 1:1 onto leaf's General/Proxy/Rule
+/// syntax — see `Vendor/Leaf/leaf/leaf/src/config/conf/config.rs` for the
+/// canonical reference.
+public struct LeafConfiguration: Sendable, Hashable {
+    public var httpPort: Int
+    public var socksPort: Int
+    public var dnsServers: [String]
+    /// Physical interface name (e.g. "en0", "en1") that leaf MUST use for all
+    /// outbound dials. This bypasses the host's packet tunnel so the upstream
+    /// connections do not loop back through Blaze.
+    public var boundInterface: String?
+    public var logLevel: String
+    public var proxies: [Proxy]
+    /// Routing rules, evaluated in order. The first match wins. Use `.final`
+    /// at the end to fall through to a named proxy.
+    public var rules: [Rule]
+    /// Tag of the proxy/group that traffic should land on by default. Mostly
+    /// matters when there are zero rules; otherwise the `.final` rule covers
+    /// it.
+    public var defaultProxy: String
+
+    public struct Proxy: Sendable, Hashable {
+        public var tag: String
+        public var protocolName: String   // direct, drop, trojan, socks, shadowsocks, ...
+        public var address: String?
+        public var port: Int?
+        public var password: String?
+        public var sni: String?
+        public var tlsInsecure: Bool
+        public var ws: Bool
+        public var wsPath: String?
+        public var wsHost: String?
+        public var encryptMethod: String?
+        public var extra: [String: String]
+
+        public init(
+            tag: String,
+            protocolName: String,
+            address: String? = nil,
+            port: Int? = nil,
+            password: String? = nil,
+            sni: String? = nil,
+            tlsInsecure: Bool = false,
+            ws: Bool = false,
+            wsPath: String? = nil,
+            wsHost: String? = nil,
+            encryptMethod: String? = nil,
+            extra: [String: String] = [:]
+        ) {
+            self.tag = tag
+            self.protocolName = protocolName
+            self.address = address
+            self.port = port
+            self.password = password
+            self.sni = sni
+            self.tlsInsecure = tlsInsecure
+            self.ws = ws
+            self.wsPath = wsPath
+            self.wsHost = wsHost
+            self.encryptMethod = encryptMethod
+            self.extra = extra
+        }
+    }
+
+    public struct Rule: Sendable, Hashable {
+        public var kind: String     // DOMAIN, DOMAIN-SUFFIX, IP-CIDR, FINAL, ...
+        public var value: String    // "" for FINAL
+        public var target: String   // proxy tag
+
+        public init(kind: String, value: String, target: String) {
+            self.kind = kind
+            self.value = value
+            self.target = target
+        }
+
+        public static func final(_ target: String) -> Rule {
+            Rule(kind: "FINAL", value: "", target: target)
+        }
+    }
+
+    /// Translate a Blaze `ProxyRule` (the format Blaze parses from the user's
+    /// Surge-style profile) into the closest leaf rule. Returns nil for kinds
+    /// leaf does not support (DOMAIN-WILDCARD, URL-REGEX, USER-AGENT,
+    /// PROCESS-NAME, raw RULE-SET, etc.) so the caller can skip them.
+    ///
+    /// `resolve` maps the Blaze rule's policy name (which may be a group)
+    /// into a tag that exists in this configuration's `proxies`. Return nil
+    /// from resolve to drop the rule entirely.
+    public static func leafRule(
+        from rule: ProxyRule,
+        resolve: (String) -> String?
+    ) -> Rule? {
+        guard let target = resolve(rule.policy) else { return nil }
+        switch rule.type.uppercased() {
+        case "DOMAIN":
+            return Rule(kind: "DOMAIN", value: rule.value, target: target)
+        case "DOMAIN-SUFFIX":
+            return Rule(kind: "DOMAIN-SUFFIX", value: rule.value, target: target)
+        case "DOMAIN-KEYWORD":
+            return Rule(kind: "DOMAIN-KEYWORD", value: rule.value, target: target)
+        case "IP-CIDR", "IP-CIDR6":
+            return Rule(kind: "IP-CIDR", value: rule.value, target: target)
+        case "GEOIP":
+            return Rule(kind: "GEOIP", value: rule.value, target: target)
+        case "DEST-PORT":
+            return Rule(kind: "PORT-RANGE", value: rule.value, target: target)
+        case "FINAL", "MATCH":
+            return Rule.final(target)
+        default:
+            return nil
+        }
+    }
+
+    public init(
+        httpPort: Int,
+        socksPort: Int,
+        dnsServers: [String],
+        boundInterface: String?,
+        logLevel: String = "info",
+        proxies: [Proxy],
+        rules: [Rule],
+        defaultProxy: String
+    ) {
+        self.httpPort = httpPort
+        self.socksPort = socksPort
+        self.dnsServers = dnsServers
+        self.boundInterface = boundInterface
+        self.logLevel = logLevel
+        self.proxies = proxies
+        self.rules = rules
+        self.defaultProxy = defaultProxy
+    }
+
+    /// Serialise to the leaf `.conf` ini-ish syntax. Comments preserve
+    /// generator provenance so a config dropped in by hand can be told apart
+    /// from one Blaze authored.
+    public func renderConf() -> String {
+        var lines: [String] = []
+        lines.append("# Generated by Blaze LeafController. Do not edit by hand.")
+        lines.append("")
+        lines.append("[General]")
+        lines.append("loglevel = \(logLevel)")
+        if !dnsServers.isEmpty {
+            lines.append("dns-server = \(dnsServers.joined(separator: ", "))")
+        }
+        lines.append("http-interface = 127.0.0.1")
+        lines.append("http-port = \(httpPort)")
+        lines.append("socks-interface = 127.0.0.1")
+        lines.append("socks-port = \(socksPort)")
+        lines.append("")
+        lines.append("[Proxy]")
+        for proxy in proxies {
+            lines.append(Self.renderProxy(proxy))
+        }
+        if !rules.isEmpty {
+            lines.append("")
+            lines.append("[Rule]")
+            for rule in rules {
+                if rule.kind == "FINAL" {
+                    lines.append("FINAL, \(rule.target)")
+                } else {
+                    lines.append("\(rule.kind), \(rule.value), \(rule.target)")
+                }
+            }
+        }
+        lines.append("")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func renderProxy(_ p: Proxy) -> String {
+        switch p.protocolName {
+        case "direct", "drop":
+            return "\(p.tag) = \(p.protocolName)"
+        default:
+            break
+        }
+        var fields: [String] = [p.protocolName]
+        if let address = p.address { fields.append(address) }
+        if let port = p.port { fields.append(String(port)) }
+        if let password = p.password { fields.append("password=\(password)") }
+        if let sni = p.sni { fields.append("sni=\(sni)") }
+        if let encryptMethod = p.encryptMethod { fields.append("encrypt-method=\(encryptMethod)") }
+        if p.tlsInsecure { fields.append("tls-insecure=true") }
+        if p.ws {
+            fields.append("ws=true")
+            if let wsPath = p.wsPath { fields.append("ws-path=\(wsPath)") }
+            if let wsHost = p.wsHost { fields.append("ws-host=\(wsHost)") }
+        }
+        for (k, v) in p.extra.sorted(by: { $0.key < $1.key }) {
+            fields.append("\(k)=\(v)")
+        }
+        return "\(p.tag) = \(fields.joined(separator: ", "))"
+    }
+}
+
+/// Manages the lifecycle of an embedded `leaf` binary running as a subprocess.
+/// Generates the leaf `.conf` file from a `LeafConfiguration`, launches the
+/// binary, exposes liveness, and stops cleanly. Designed to be driven from a
+/// single owner; protected by an actor so concurrent start/stop requests
+/// serialise.
+public actor LeafController {
+    public enum LeafError: Error, LocalizedError {
+        case binaryNotFound(URL)
+        case launchFailed(String)
+        case alreadyRunning
+        case writeConfigFailed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .binaryNotFound(let url):
+                return "leaf binary not found at \(url.path)"
+            case .launchFailed(let message):
+                return "leaf launch failed: \(message)"
+            case .alreadyRunning:
+                return "leaf is already running"
+            case .writeConfigFailed(let message):
+                return "leaf config write failed: \(message)"
+            }
+        }
+    }
+
+    /// Notification sent when leaf transitions between running / stopped /
+    /// restarting. WorkbenchStore subscribes so it can keep
+    /// proxyServerRunning / socksServerRunning honest even when leaf restarts
+    /// itself after a crash or network flip.
+    public enum LifecycleEvent: Sendable {
+        case started(pid: Int32)
+        case exited(status: Int32, willRestart: Bool, attempt: Int)
+        case stopped
+        case restarting(attempt: Int, delayMillis: UInt64)
+    }
+
+    public typealias LifecycleHandler = @Sendable (LifecycleEvent) async -> Void
+
+    private let binaryURL: URL
+    private let runtimeDir: URL
+    private var process: Process?
+    private var lastConfiguration: LeafConfiguration?
+    private var lastConfigPath: URL?
+    private var lastLogPath: URL?
+    private var healthProbeTask: Task<Void, Never>?
+    private var consecutiveProbeFailures = 0
+    /// True when the owner asked us to stop. Distinguishes "intentional shutdown"
+    /// from "crashed / killed externally" so the supervisor knows whether to
+    /// restart.
+    private var stopRequested = false
+    /// Generation counter incremented on every start. Background tasks capture
+    /// the generation at launch and bail out if a newer launch superseded
+    /// them, preventing zombie restart loops.
+    private var generation: UInt64 = 0
+    /// Number of consecutive unexpected exits since the last clean start.
+    /// Used to scale the restart backoff and to surface a "stuck" state.
+    private var consecutiveFailures = 0
+    private var lifecycleHandler: LifecycleHandler?
+
+    public init(binaryURL: URL, runtimeDir: URL) {
+        self.binaryURL = binaryURL
+        self.runtimeDir = runtimeDir
+    }
+
+    public func setLifecycleHandler(_ handler: @escaping LifecycleHandler) {
+        self.lifecycleHandler = handler
+    }
+
+    public var isRunning: Bool {
+        process?.isRunning ?? false
+    }
+
+    public var pid: Int32? {
+        process?.processIdentifier
+    }
+
+    public var configPath: URL? { lastConfigPath }
+    public var logPath: URL? { lastLogPath }
+    public var configuration: LeafConfiguration? { lastConfiguration }
+
+    /// Apply a configuration and ensure leaf is running with it. If leaf is
+    /// already serving an equivalent configuration, this is a no-op. If the
+    /// configuration changed (e.g. the physical interface name flipped after
+    /// a Wi-Fi reconnect), leaf is restarted with the new one.
+    public func start(with configuration: LeafConfiguration) async throws {
+        stopRequested = false
+        if let running = process, running.isRunning, lastConfiguration == configuration {
+            return
+        }
+        if let running = process, running.isRunning {
+            await internalStopProcess(running)
+        } else {
+            // Even if our own controller doesn't know about a leaf process,
+            // a previous app run may have left one alive (the host app was
+            // SIGKILLed before it could call stop()). Sweep it up so the
+            // new launch doesn't get EADDRINUSE on port 19081/19080.
+            terminateOrphanLeafProcesses()
+        }
+        try await launch(configuration: configuration, attempt: 0)
+    }
+
+    /// Send SIGTERM (then SIGKILL) to any orphan leaf process from a previous
+    /// app run. Uses pkill rather than ps+parse because the latter deadlocks
+    /// when ps output exceeds the pipe buffer (which it routinely does on a
+    /// busy macOS box with 500+ processes).
+    private func terminateOrphanLeafProcesses() {
+        let path = binaryURL.standardizedFileURL.path
+        let exitCode = runPkill(signal: "-TERM", pattern: path)
+        guard exitCode == 0 else {
+            // Exit 1 means "no matching process", which is the common case.
+            return
+        }
+        leafLogger.notice("orphan leaf cleanup: SIGTERM sent to \(path, privacy: .public)")
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = runPkill(signal: "-KILL", pattern: path)
+    }
+
+    private func runPkill(signal: String, pattern: String) -> Int32 {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = [signal, "-f", pattern]
+        // Inherit /dev/null for stdout/stderr to avoid any pipe overhead;
+        // pkill returns its result via exit status.
+        let devNullR = FileHandle(forReadingAtPath: "/dev/null")
+        let devNullW = FileHandle(forWritingAtPath: "/dev/null")
+        if let devNullR { task.standardInput = devNullR }
+        if let devNullW {
+            task.standardOutput = devNullW
+            task.standardError = devNullW
+        }
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus
+        } catch {
+            return -1
+        }
+    }
+
+    /// Stop leaf and prevent the supervisor from restarting it.
+    public func stop() async {
+        stopRequested = true
+        generation &+= 1   // invalidate any in-flight watcher's expectations
+        consecutiveFailures = 0
+        healthProbeTask?.cancel()
+        healthProbeTask = nil
+        if let running = process, running.isRunning {
+            await internalStopProcess(running)
+        }
+        self.process = nil
+        await lifecycleHandler?(.stopped)
+    }
+
+    /// Internal entry point used by both the public start path and the
+    /// supervisor restart path. Always runs serialised on the actor.
+    private func launch(configuration: LeafConfiguration, attempt: Int) async throws {
+        guard !stopRequested else { return }
+
+        guard FileManager.default.fileExists(atPath: binaryURL.path) else {
+            throw LeafError.binaryNotFound(binaryURL)
+        }
+
+        try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+        let configURL = runtimeDir.appendingPathComponent("leaf.conf")
+        let logURL = runtimeDir.appendingPathComponent("leaf.log")
+
+        do {
+            try configuration.renderConf().write(to: configURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw LeafError.writeConfigFailed(error.localizedDescription)
+        }
+
+        let newProcess = Process()
+        newProcess.executableURL = binaryURL
+        var arguments = ["-c", configURL.path]
+        if let bound = configuration.boundInterface, !bound.isEmpty {
+            arguments.append(contentsOf: ["-b", bound])
+        }
+        newProcess.arguments = arguments
+
+        // Append (not truncate) the log file so a crash + restart leaves both
+        // runs in the file. The supervisor writes a separator on each respawn
+        // so the boundary is obvious to anyone reading leaf.log later.
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let logHandle = try FileHandle(forWritingTo: logURL)
+        try logHandle.seekToEnd()
+        if attempt > 0 {
+            let banner = "\n----- leaf restart attempt \(attempt) at \(ISO8601DateFormatter().string(from: Date())) -----\n"
+            try logHandle.write(contentsOf: Data(banner.utf8))
+        }
+        newProcess.standardOutput = logHandle
+        newProcess.standardError = logHandle
+
+        do {
+            try newProcess.run()
+        } catch {
+            try? logHandle.close()
+            throw LeafError.launchFailed(error.localizedDescription)
+        }
+
+        generation &+= 1
+        let currentGeneration = generation
+        self.process = newProcess
+        self.lastConfiguration = configuration
+        self.lastConfigPath = configURL
+        self.lastLogPath = logURL
+        let pid = newProcess.processIdentifier
+        if attempt == 0 {
+            consecutiveFailures = 0
+        }
+        leafLogger.notice("leaf started pid=\(pid, privacy: .public) attempt=\(attempt, privacy: .public) config=\(configURL.path, privacy: .public)")
+        await lifecycleHandler?(.started(pid: pid))
+        startHealthProbe(socksPort: configuration.socksPort, generation: currentGeneration)
+
+        // Detach a watcher that waits for process exit, then reports back to
+        // the actor. The watcher captures `currentGeneration`; the actor's
+        // handleExit checks the generation matches before acting on it.
+        Task.detached { [weak self] in
+            newProcess.waitUntilExit()
+            let status = newProcess.terminationStatus
+            let reason = newProcess.terminationReason
+            leafLogger.notice("leaf exited pid=\(pid, privacy: .public) status=\(status, privacy: .public) reason=\(String(describing: reason), privacy: .public)")
+            await self?.handleExit(
+                generation: currentGeneration,
+                status: status,
+                configuration: configuration
+            )
+        }
+    }
+
+    private func startHealthProbe(socksPort: Int, generation observed: UInt64) {
+        healthProbeTask?.cancel()
+        consecutiveProbeFailures = 0
+        healthProbeTask = Task { [weak self] in
+            // First probe after 5s of warmup; thereafter every 15s.
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            while !Task.isCancelled {
+                guard let self else { return }
+                let stillCurrent = await self.probeListenerHealth(socksPort: socksPort, generation: observed)
+                if !stillCurrent { return }
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
+    }
+
+    /// Attempt a TCP connect to the local SOCKS5 port. Returns false if the
+    /// supervisor's generation has advanced past `observed` (a newer launch
+    /// took over) so the caller knows to stop probing. The probe uses a 2s
+    /// SO_RCVTIMEO/SO_SNDTIMEO; two consecutive failures terminate the
+    /// process so the supervisor restarts it from scratch.
+    private func probeListenerHealth(socksPort: Int, generation observed: UInt64) async -> Bool {
+        guard observed == generation else { return false }
+        guard let process, process.isRunning else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(socksPort).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sptr in
+                connect(fd, sptr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if result == 0 {
+            if consecutiveProbeFailures > 0 {
+                leafLogger.notice("leaf health probe recovered on port=\(socksPort, privacy: .public)")
+            }
+            consecutiveProbeFailures = 0
+            return true
+        }
+        consecutiveProbeFailures += 1
+        leafLogger.notice("leaf health probe failed port=\(socksPort, privacy: .public) errno=\(errno, privacy: .public) consecutive=\(self.consecutiveProbeFailures, privacy: .public)")
+        if consecutiveProbeFailures >= 2 {
+            leafLogger.notice("leaf unresponsive after \(self.consecutiveProbeFailures, privacy: .public) probes; SIGTERM to trigger supervisor restart")
+            consecutiveProbeFailures = 0
+            // SIGTERM the process. handleExit will respawn via the supervisor.
+            process.terminate()
+            return false
+        }
+        return true
+    }
+
+    private func handleExit(generation observed: UInt64, status: Int32, configuration: LeafConfiguration) async {
+        // If a newer launch already took over, ignore this watcher.
+        guard observed == self.generation else { return }
+        process = nil
+        if stopRequested {
+            await lifecycleHandler?(.exited(status: status, willRestart: false, attempt: consecutiveFailures))
+            return
+        }
+        consecutiveFailures += 1
+        let attempt = consecutiveFailures
+        // Exponential backoff capped at 5s. The first respawn fires almost
+        // immediately; if leaf keeps crashing we stretch out so we don't
+        // hammer a broken upstream.
+        let delayMillis: UInt64
+        switch attempt {
+        case 1: delayMillis = 200
+        case 2: delayMillis = 400
+        case 3: delayMillis = 800
+        case 4: delayMillis = 1600
+        case 5: delayMillis = 3200
+        default: delayMillis = 5000
+        }
+        await lifecycleHandler?(.exited(status: status, willRestart: true, attempt: attempt))
+        await lifecycleHandler?(.restarting(attempt: attempt, delayMillis: delayMillis))
+        try? await Task.sleep(nanoseconds: delayMillis * 1_000_000)
+        // Re-check: the user may have called stop() during the sleep.
+        guard !stopRequested, observed == self.generation else { return }
+        do {
+            try await launch(configuration: configuration, attempt: attempt)
+        } catch {
+            leafLogger.error("leaf respawn attempt=\(attempt, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // Schedule one more respawn with the same backoff slot rather
+            // than giving up — typical failures here are transient (config
+            // file briefly missing, no IO, etc.).
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !stopRequested else { return }
+            try? await launch(configuration: configuration, attempt: attempt)
+        }
+    }
+
+    private func internalStopProcess(_ running: Process) async {
+        leafLogger.notice("leaf stopping pid=\(running.processIdentifier, privacy: .public)")
+        running.terminate()
+        let pid = running.processIdentifier
+        let deadline = Date().addingTimeInterval(3.0)
+        while running.isRunning && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if running.isRunning {
+            leafLogger.notice("leaf still running after SIGTERM; sending SIGKILL pid=\(pid, privacy: .public)")
+            kill(pid, SIGKILL)
+        }
+    }
+}

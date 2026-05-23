@@ -4,16 +4,16 @@ import os.log
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let logger = Logger(subsystem: "com.chenhuazhao.blaze.tunnel", category: "PacketTunnelProvider")
-    private var engine: PacketTunnelEngine?
+    private var engine: PacketTunnelRunning?
     private var packetReadInProgress = false
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         let tunnelProtocol = protocolConfiguration as? NETunnelProviderProtocol
         let configuration = PacketTunnelRuntimeConfiguration(providerConfiguration: tunnelProtocol?.providerConfiguration)
-        logger.info("Starting blaze packet tunnel: socks=\(configuration.socksHost, privacy: .public):\(configuration.socksPort, privacy: .public), http=\(configuration.httpHost, privacy: .public):\(configuration.httpPort, privacy: .public), excludedIPv4=\(configuration.excludedIPv4Addresses.count, privacy: .public), suppressIPv6DNS=\(configuration.suppressIPv6DNS, privacy: .public)")
+        logger.info("Starting blaze packet tunnel: engine=\(configuration.engineKind.rawValue, privacy: .public), socks=\(configuration.socksHost, privacy: .public):\(configuration.socksPort, privacy: .public), http=\(configuration.httpHost, privacy: .public):\(configuration.httpPort, privacy: .public), excludedIPv4=\(configuration.excludedIPv4Addresses.count, privacy: .public), suppressIPv6DNS=\(configuration.suppressIPv6DNS, privacy: .public)")
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "254.1.1.1")
-        settings.mtu = 1500
+        settings.mtu = NSNumber(value: configuration.tunnelMTU)
 
         let ipv4 = NEIPv4Settings(addresses: ["10.255.0.2"], subnetMasks: ["255.255.255.255"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
@@ -42,7 +42,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.ipv6Settings = ipv6
         }
 
-        let dns = NEDNSSettings(servers: ["9.9.9.9", "1.1.1.1"])
+        let dns = NEDNSSettings(servers: configuration.tunnelDNSServers)
         dns.matchDomains = [""]
         settings.dnsSettings = dns
 
@@ -62,9 +62,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.proxySettings = proxy
         }
 
-        let engine = PacketTunnelEngine(packetFlow: packetFlow, configuration: configuration)
-        self.engine = engine
-
         setTunnelNetworkSettings(settings) { [weak self] error in
             if let error {
                 self?.logger.error("Failed to apply tunnel settings: \(String(describing: error), privacy: .public)")
@@ -72,8 +69,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            self?.startPacketReadLoop()
-            self?.logger.info("Blaze packet tunnel forwarding started")
+            guard let self else { return }
+
+            do {
+                self.engine = try Self.makeEngine(packetFlow: self.packetFlow, configuration: configuration)
+            } catch {
+                self.logger.error("Failed to start packet tunnel engine: \(String(describing: error), privacy: .public)")
+                completionHandler(error)
+                return
+            }
+
+            self.startPacketReadLoop()
+            self.logger.info("Blaze packet tunnel forwarding started")
             completionHandler(nil)
         }
     }
@@ -112,6 +119,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self else { return }
             self.engine?.handlePackets(packets, protocols: protocols)
             self.readPackets()
+        }
+    }
+
+    private static func makeEngine(packetFlow: NEPacketTunnelFlow, configuration: PacketTunnelRuntimeConfiguration) throws -> PacketTunnelRunning {
+        switch configuration.engineKind {
+        case .native:
+            return PacketTunnelEngine(packetFlow: packetFlow, configuration: configuration)
+        case .hev:
+            return try HevPacketTunnelEngine(packetFlow: packetFlow, configuration: configuration)
         }
     }
 }

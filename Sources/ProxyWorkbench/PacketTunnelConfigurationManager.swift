@@ -59,9 +59,23 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
     var tcpOutboundBufferOverflows: UInt64
     var tcpWindowStalls: UInt64
     var tcpUpstreamCloses: UInt64
+    var hevPacketsSentToTunnel: UInt64
+    var hevBytesSentToTunnel: UInt64
+    var hevPacketsReceivedFromTunnel: UInt64
+    var hevBytesReceivedFromTunnel: UInt64
+    var hevBridgeWriteFailures: UInt64
+    var hevTunnelTxPackets: UInt64
+    var hevTunnelTxBytes: UInt64
+    var hevTunnelRxPackets: UInt64
+    var hevTunnelRxBytes: UInt64
 
     var summary: String {
-        "packets \(packetsRead), TCP \(tcpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows), SOCKS \(tcpSocksConnectAttempts)/\(tcpSocksConnectSuccesses)/\(tcpSocksConnectFailures), bytes c>u \(tcpUpstreamBytesSent), u>c \(tcpClientBytesSent), writes \(tcpPacketsWritten), rtx \(tcpRetransmittedPackets), rst \(tcpResetsSent), closed \(tcpFlowsClosed)"
+        let base = "packets \(packetsRead), TCP \(tcpPackets), DNS \(dnsQueries), fake-IP TCP \(fakeIPTCPDestinations), active TCP \(activeTCPFlows), SOCKS \(tcpSocksConnectAttempts)/\(tcpSocksConnectSuccesses)/\(tcpSocksConnectFailures), bytes c>u \(tcpUpstreamBytesSent), u>c \(tcpClientBytesSent), writes \(tcpPacketsWritten), rtx \(tcpRetransmittedPackets), rst \(tcpResetsSent), closed \(tcpFlowsClosed)"
+        let hasHevCounters = hevPacketsSentToTunnel > 0 || hevPacketsReceivedFromTunnel > 0 || hevBridgeWriteFailures > 0 || hevTunnelTxPackets > 0 || hevTunnelRxPackets > 0
+        if hasHevCounters {
+            return "\(base), HEV in/out \(hevPacketsSentToTunnel)/\(hevPacketsReceivedFromTunnel), HEV stats tx/rx \(hevTunnelTxPackets)/\(hevTunnelRxPackets), HEV bridge errors \(hevBridgeWriteFailures)"
+        }
+        return base
     }
 
     enum CodingKeys: String, CodingKey {
@@ -96,6 +110,15 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
         case tcpOutboundBufferOverflows
         case tcpWindowStalls
         case tcpUpstreamCloses
+        case hevPacketsSentToTunnel
+        case hevBytesSentToTunnel
+        case hevPacketsReceivedFromTunnel
+        case hevBytesReceivedFromTunnel
+        case hevBridgeWriteFailures
+        case hevTunnelTxPackets
+        case hevTunnelTxBytes
+        case hevTunnelRxPackets
+        case hevTunnelRxBytes
     }
 
     init(from decoder: Decoder) throws {
@@ -131,6 +154,126 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
         tcpOutboundBufferOverflows = try container.decodeIfPresent(UInt64.self, forKey: .tcpOutboundBufferOverflows) ?? 0
         tcpWindowStalls = try container.decodeIfPresent(UInt64.self, forKey: .tcpWindowStalls) ?? 0
         tcpUpstreamCloses = try container.decodeIfPresent(UInt64.self, forKey: .tcpUpstreamCloses) ?? 0
+        hevPacketsSentToTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevPacketsSentToTunnel) ?? 0
+        hevBytesSentToTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevBytesSentToTunnel) ?? 0
+        hevPacketsReceivedFromTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevPacketsReceivedFromTunnel) ?? 0
+        hevBytesReceivedFromTunnel = try container.decodeIfPresent(UInt64.self, forKey: .hevBytesReceivedFromTunnel) ?? 0
+        hevBridgeWriteFailures = try container.decodeIfPresent(UInt64.self, forKey: .hevBridgeWriteFailures) ?? 0
+        hevTunnelTxPackets = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelTxPackets) ?? 0
+        hevTunnelTxBytes = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelTxBytes) ?? 0
+        hevTunnelRxPackets = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelRxPackets) ?? 0
+        hevTunnelRxBytes = try container.decodeIfPresent(UInt64.self, forKey: .hevTunnelRxBytes) ?? 0
+    }
+}
+
+struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
+    static let nativeVirtualDNSServer = "198.18.0.2"
+    static let hevMapDNSServer = "198.19.0.1"
+    static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+    static let defaultTunnelMTU = 1_280
+
+    var packetEngine: String
+    var tunnelMTU: Int
+    var httpHost: String
+    var httpPort: Int
+    var socksHost: String
+    var socksPort: Int
+    var dnsOverHTTPSURL: String
+    var excludedIPv4Addresses: [String]
+    var suppressIPv6DNS: Bool
+    var enableFakeIPDNS: Bool
+    var enableUDPRelay: Bool
+    var enableProxySettings: Bool
+    var enableDNSNetworkFallback: Bool
+    var enableIPv6Blackhole: Bool
+    var hevLibraryDirectory: String?
+    var hevUDPMode: String
+
+    init(providerConfiguration: [String: Any]?) {
+        packetEngine = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
+        tunnelMTU = Self.mtuValue(providerConfiguration?["tunnelMTU"], defaultValue: Self.defaultTunnelMTU)
+        httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
+        httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
+        socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
+        socksPort = Self.intValue(providerConfiguration?["socksPort"], defaultValue: 19081)
+        dnsOverHTTPSURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
+        excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
+        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
+        enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
+        enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
+        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
+    }
+
+    var tunnelDNSServers: [String] {
+        guard enableFakeIPDNS else {
+            return Self.fallbackDNSServers
+        }
+        return packetEngine == "hev" ? [Self.hevMapDNSServer] : [Self.nativeVirtualDNSServer]
+    }
+
+    var engineDescription: String {
+        packetEngine == "hev" ? "HEV socks5 tunnel" : "Native TCP shim"
+    }
+
+    var listenerSummary: String {
+        "HTTP \(httpHost):\(httpPort), SOCKS5 \(socksHost):\(socksPort)"
+    }
+
+    var dnsSummary: String {
+        guard enableFakeIPDNS else {
+            return "\(tunnelDNSServers.joined(separator: ", ")) system fallback; fake-IP DNS disabled"
+        }
+        return "\(tunnelDNSServers.joined(separator: ", ")) -> \(dnsOverHTTPSURL)"
+    }
+
+    var exclusionSummary: String {
+        guard !excludedIPv4Addresses.isEmpty else {
+            return "No upstream bypass addresses"
+        }
+        let preview = excludedIPv4Addresses.prefix(8).joined(separator: ", ")
+        let suffix = excludedIPv4Addresses.count > 8 ? ", +\(excludedIPv4Addresses.count - 8) more" : ""
+        return "\(excludedIPv4Addresses.count): \(preview)\(suffix)"
+    }
+
+    private static func stringValue(_ value: Any?, defaultValue: String) -> String {
+        optionalStringValue(value) ?? defaultValue
+    }
+
+    private static func optionalStringValue(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func intValue(_ value: Any?, defaultValue: Int) -> Int {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return defaultValue
+    }
+
+    private static func mtuValue(_ value: Any?, defaultValue: Int) -> Int {
+        min(max(intValue(value, defaultValue: defaultValue), 576), 1_500)
+    }
+
+    private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return defaultValue
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        (value as? [String]) ?? []
     }
 }
 
@@ -138,13 +281,23 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
 enum PacketTunnelConfigurationManager {
     static let localizedDescription = "blaze Packet Tunnel"
 
-    static func installOrUpdateConfiguration(httpPort: Int, socksPort: Int, excludedIPv4Addresses: [String] = []) async throws {
+    static func installOrUpdateConfiguration(
+        httpPort: Int,
+        socksPort: Int,
+        excludedIPv4Addresses: [String] = [],
+        tunnelMTU: Int = PacketTunnelConfigurationSnapshot.defaultTunnelMTU,
+        packetEngine: String = "hev",
+        hevLibraryDirectory: String? = nil,
+        hevUDPMode: String = "tcp"
+    ) async throws {
         let manager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
         tunnelProtocol.providerBundleIdentifier = SystemExtensionController.extensionIdentifier
         tunnelProtocol.serverAddress = "blaze"
-        tunnelProtocol.providerConfiguration = [
+        var providerConfiguration: [String: Any] = [
             "mode": "tun2socks",
+            "packetEngine": packetEngine,
+            "tunnelMTU": min(max(tunnelMTU, 576), 1_500),
             "createdBy": "blaze",
             "httpHost": "127.0.0.1",
             "httpPort": httpPort,
@@ -157,8 +310,13 @@ enum PacketTunnelConfigurationManager {
             "enableUDPRelay": false,
             "enableProxySettings": false,
             "enableDNSNetworkFallback": false,
-            "enableIPv6Blackhole": true
+            "enableIPv6Blackhole": true,
+            "hevUDPMode": hevUDPMode
         ]
+        if let hevLibraryDirectory {
+            providerConfiguration["hevLibraryDirectory"] = hevLibraryDirectory
+        }
+        tunnelProtocol.providerConfiguration = providerConfiguration
 
         manager.localizedDescription = localizedDescription
         manager.protocolConfiguration = tunnelProtocol
@@ -215,6 +373,15 @@ enum PacketTunnelConfigurationManager {
             }
         }
         return try JSONDecoder().decode(PacketTunnelDiagnosticsSnapshot.self, from: response)
+    }
+
+    static func configurationSnapshot() async throws -> PacketTunnelConfigurationSnapshot {
+        let manager = try await loadExistingManager()
+        try await loadFromPreferences(manager)
+        guard let tunnelProtocol = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+            throw PacketTunnelConfigurationError.missingProtocolConfiguration
+        }
+        return PacketTunnelConfigurationSnapshot(providerConfiguration: tunnelProtocol.providerConfiguration)
     }
 
     private static func loadOrCreateManager() async throws -> NETunnelProviderManager {

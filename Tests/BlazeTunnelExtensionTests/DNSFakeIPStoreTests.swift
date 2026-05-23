@@ -12,6 +12,8 @@ final class DNSFakeIPStoreTests: XCTestCase {
 
         XCTAssertEqual(first, second)
         XCTAssertTrue(DNSFakeIPStore.isFakeIP(first))
+        XCTAssertNotEqual(IPv4AddressFormatter.string(from: first), PacketTunnelRuntimeConfiguration.nativeVirtualDNSServer)
+        XCTAssertNotEqual(IPv4AddressFormatter.string(from: first), PacketTunnelRuntimeConfiguration.hevMapDNSServer)
         XCTAssertEqual(store.domain(for: first, now: now.addingTimeInterval(20)), "example.com")
     }
 

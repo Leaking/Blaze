@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Darwin
 import SwiftUI
 
@@ -13,19 +14,17 @@ struct BlazeApp: App {
 
     var body: some Scene {
         WindowGroup("blaze") {
-            ContentView()
+            BlazeRedesignView()
                 .environmentObject(store)
-                .tint(.indigo)
-                .frame(minWidth: 1080, minHeight: 720)
-                .onOpenURL { url in
-                    store.handleAutomationURL(url)
-                }
+                .tint(.blue)
+                .frame(minWidth: 720, minHeight: 640)
                 .task {
                     appDelegate.store = store
                     store.loadInitialProfile()
                 }
         }
-        .defaultSize(width: 1240, height: 820)
+        .defaultSize(width: 820, height: 760)
+        .windowStyle(.titleBar)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Load Sample") {
@@ -147,14 +146,62 @@ struct BlazeApp: App {
     }
 }
 
+@MainActor
 final class BlazeAppDelegate: NSObject, NSApplicationDelegate {
-    weak var store: WorkbenchStore?
+    weak var store: WorkbenchStore? {
+        didSet {
+            drainPendingAutomationURLs()
+        }
+    }
+    private var pendingAutomationURLs: [URL] = []
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleAutomationURLs(urls)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        NSAppleEventManager.shared().removeEventHandler(
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
         store?.restoreSystemProxyForTermination()
+    }
+
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+              let url = URL(string: urlString) else {
+            return
+        }
+        handleAutomationURLs([url])
+    }
+
+    private func handleAutomationURLs(_ urls: [URL]) {
+        guard let store else {
+            pendingAutomationURLs.append(contentsOf: urls)
+            return
+        }
+        for url in urls {
+            store.handleAutomationURL(url)
+        }
+    }
+
+    private func drainPendingAutomationURLs() {
+        guard store != nil, !pendingAutomationURLs.isEmpty else { return }
+        let urls = pendingAutomationURLs
+        pendingAutomationURLs.removeAll()
+        handleAutomationURLs(urls)
     }
 }

@@ -3,7 +3,19 @@ import Foundation
 @preconcurrency import NetworkExtension
 import os.log
 
+enum PacketTunnelEngineKind: String, Sendable {
+    case native
+    case hev
+}
+
 struct PacketTunnelRuntimeConfiguration {
+    static let nativeVirtualDNSServer = "198.18.0.2"
+    static let hevMapDNSServer = "198.19.0.1"
+    static let fallbackDNSServers = ["9.9.9.9", "1.1.1.1"]
+    static let defaultTunnelMTU = 1_280
+
+    var engineKind: PacketTunnelEngineKind
+    var tunnelMTU: Int
     var httpHost: String
     var httpPort: Int
     var socksHost: String
@@ -16,21 +28,78 @@ struct PacketTunnelRuntimeConfiguration {
     var enableProxySettings: Bool
     var enableDNSNetworkFallback: Bool
     var enableIPv6Blackhole: Bool
+    var hevLibraryDirectory: String?
+    var hevUDPMode: String
 
     init(providerConfiguration: [String: Any]?) {
-        httpHost = providerConfiguration?["httpHost"] as? String ?? "127.0.0.1"
-        httpPort = providerConfiguration?["httpPort"] as? Int ?? 19080
-        socksHost = providerConfiguration?["socksHost"] as? String ?? "127.0.0.1"
-        socksPort = providerConfiguration?["socksPort"] as? Int ?? 19081
-        let dnsURL = providerConfiguration?["dnsOverHTTPSURL"] as? String ?? "https://1.1.1.1/dns-query"
+        let engineName = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
+        engineKind = PacketTunnelEngineKind(rawValue: engineName) ?? .native
+        tunnelMTU = Self.mtuValue(providerConfiguration?["tunnelMTU"], defaultValue: Self.defaultTunnelMTU)
+        httpHost = Self.stringValue(providerConfiguration?["httpHost"], defaultValue: "127.0.0.1")
+        httpPort = Self.intValue(providerConfiguration?["httpPort"], defaultValue: 19080)
+        socksHost = Self.stringValue(providerConfiguration?["socksHost"], defaultValue: "127.0.0.1")
+        socksPort = Self.intValue(providerConfiguration?["socksPort"], defaultValue: 19081)
+        let dnsURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
         dnsOverHTTPSURL = URL(string: dnsURL) ?? URL(string: "https://1.1.1.1/dns-query")!
-        excludedIPv4Addresses = providerConfiguration?["excludedIPv4Addresses"] as? [String] ?? []
-        suppressIPv6DNS = providerConfiguration?["suppressIPv6DNS"] as? Bool ?? true
-        enableFakeIPDNS = providerConfiguration?["enableFakeIPDNS"] as? Bool ?? true
-        enableUDPRelay = providerConfiguration?["enableUDPRelay"] as? Bool ?? false
-        enableProxySettings = providerConfiguration?["enableProxySettings"] as? Bool ?? false
-        enableDNSNetworkFallback = providerConfiguration?["enableDNSNetworkFallback"] as? Bool ?? false
-        enableIPv6Blackhole = providerConfiguration?["enableIPv6Blackhole"] as? Bool ?? true
+        excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
+        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
+        enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
+        enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
+        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
+    }
+
+    var tunnelDNSServers: [String] {
+        guard enableFakeIPDNS else {
+            return Self.fallbackDNSServers
+        }
+
+        switch engineKind {
+        case .native:
+            return [Self.nativeVirtualDNSServer]
+        case .hev:
+            return [Self.hevMapDNSServer]
+        }
+    }
+
+    private static func stringValue(_ value: Any?, defaultValue: String) -> String {
+        optionalStringValue(value) ?? defaultValue
+    }
+
+    private static func optionalStringValue(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func intValue(_ value: Any?, defaultValue: Int) -> Int {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return defaultValue
+    }
+
+    private static func mtuValue(_ value: Any?, defaultValue: Int) -> Int {
+        min(max(intValue(value, defaultValue: defaultValue), 576), 1_500)
+    }
+
+    private static func boolValue(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return defaultValue
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        (value as? [String]) ?? []
     }
 }
 
@@ -66,9 +135,24 @@ struct PacketTunnelDiagnostics: Codable, Equatable, Sendable {
     var tcpOutboundBufferOverflows: UInt64 = 0
     var tcpWindowStalls: UInt64 = 0
     var tcpUpstreamCloses: UInt64 = 0
+    var hevPacketsSentToTunnel: UInt64 = 0
+    var hevBytesSentToTunnel: UInt64 = 0
+    var hevPacketsReceivedFromTunnel: UInt64 = 0
+    var hevBytesReceivedFromTunnel: UInt64 = 0
+    var hevBridgeWriteFailures: UInt64 = 0
+    var hevTunnelTxPackets: UInt64 = 0
+    var hevTunnelTxBytes: UInt64 = 0
+    var hevTunnelRxPackets: UInt64 = 0
+    var hevTunnelRxBytes: UInt64 = 0
 }
 
-final class PacketTunnelEngine: @unchecked Sendable {
+protocol PacketTunnelRunning: AnyObject {
+    func handlePackets(_ packets: [Data], protocols: [NSNumber])
+    func stop()
+    func diagnosticsSnapshot() -> PacketTunnelDiagnostics
+}
+
+final class PacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.chenhuazhao.blaze.tunnel", category: "PacketTunnelEngine")
     private let packetFlow: NEPacketTunnelFlow
     private let configuration: PacketTunnelRuntimeConfiguration
