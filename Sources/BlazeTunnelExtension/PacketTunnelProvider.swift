@@ -10,7 +10,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         let tunnelProtocol = protocolConfiguration as? NETunnelProviderProtocol
         let configuration = PacketTunnelRuntimeConfiguration(providerConfiguration: tunnelProtocol?.providerConfiguration)
-        logger.info("Starting blaze packet tunnel: engine=\(configuration.engineKind.rawValue, privacy: .public), socks=\(configuration.socksHost, privacy: .public):\(configuration.socksPort, privacy: .public), http=\(configuration.httpHost, privacy: .public):\(configuration.httpPort, privacy: .public), excludedIPv4=\(configuration.excludedIPv4Addresses.count, privacy: .public), suppressIPv6DNS=\(configuration.suppressIPv6DNS, privacy: .public)")
+        logger.info("Starting blaze packet tunnel: engine=\(configuration.engineKind.rawValue, privacy: .public), socks=\(configuration.socksHost, privacy: .public):\(configuration.socksPort, privacy: .public), http=\(configuration.httpHost, privacy: .public):\(configuration.httpPort, privacy: .public), excludedIPv4=\(configuration.excludedIPv4Addresses.count, privacy: .public), ipv6=\(configuration.ipv6Mode.rawValue, privacy: .public), udpRelay=\(configuration.enableUDPRelay, privacy: .public), hevUDPMode=\(configuration.hevUDPMode, privacy: .public)")
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "254.1.1.1")
         settings.mtu = NSNumber(value: configuration.tunnelMTU)
@@ -31,7 +31,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ipv4.excludedRoutes = excludedRoutes
         settings.ipv4Settings = ipv4
 
-        if configuration.enableIPv6Blackhole {
+        switch configuration.ipv6Mode {
+        case .blackhole:
             let ipv6 = NEIPv6Settings(addresses: ["fd7a:626c:617a:6500::2"], networkPrefixLengths: [128])
             ipv6.includedRoutes = [NEIPv6Route.default()]
             ipv6.excludedRoutes = [
@@ -40,6 +41,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 NEIPv6Route(destinationAddress: "ff00::", networkPrefixLength: 8)
             ]
             settings.ipv6Settings = ipv6
+        case .passthrough:
+            // Intentionally do not install ipv6Settings — the OS keeps IPv6
+            // on the physical interface so IPv6-only sites work. IPv6
+            // destinations are not proxied; that's the trade-off.
+            break
         }
 
         let dns = NEDNSSettings(servers: configuration.tunnelDNSServers)

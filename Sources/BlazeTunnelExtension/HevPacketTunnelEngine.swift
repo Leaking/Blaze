@@ -382,7 +382,7 @@ final class HevPacketTunnelEngine: PacketTunnelRunning, @unchecked Sendable {
     }
 }
 
-private struct HevSocks5TunnelConfiguration {
+struct HevSocks5TunnelConfiguration {
     private static let mapDNSAddress = PacketTunnelRuntimeConfiguration.hevMapDNSServer
     private static let mapDNSNetwork = "198.18.0.0"
     private static let mapDNSNetmask = "255.255.0.0"

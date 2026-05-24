@@ -166,6 +166,11 @@ struct PacketTunnelDiagnosticsSnapshot: Codable, Hashable, Sendable {
     }
 }
 
+enum PacketTunnelIPv6Mode: String, Sendable, Hashable {
+    case passthrough
+    case blackhole
+}
+
 struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
     static let nativeVirtualDNSServer = "198.18.0.2"
     static let hevMapDNSServer = "198.19.0.1"
@@ -180,14 +185,16 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
     var socksPort: Int
     var dnsOverHTTPSURL: String
     var excludedIPv4Addresses: [String]
-    var suppressIPv6DNS: Bool
     var enableFakeIPDNS: Bool
     var enableUDPRelay: Bool
     var enableProxySettings: Bool
     var enableDNSNetworkFallback: Bool
-    var enableIPv6Blackhole: Bool
+    var ipv6Mode: PacketTunnelIPv6Mode
     var hevLibraryDirectory: String?
     var hevUDPMode: String
+
+    var enableIPv6Blackhole: Bool { ipv6Mode == .blackhole }
+    var suppressIPv6DNS: Bool { ipv6Mode == .blackhole }
 
     init(providerConfiguration: [String: Any]?) {
         packetEngine = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
@@ -198,14 +205,29 @@ struct PacketTunnelConfigurationSnapshot: Hashable, Sendable {
         socksPort = Self.intValue(providerConfiguration?["socksPort"], defaultValue: 19081)
         dnsOverHTTPSURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
         excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
-        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
         enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
-        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: true)
         enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
         enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
-        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        ipv6Mode = Self.ipv6Mode(
+            from: providerConfiguration?["ipv6Mode"],
+            legacyBlackhole: providerConfiguration?["enableIPv6Blackhole"]
+        )
         hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
-        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+    }
+
+    private static func ipv6Mode(from value: Any?, legacyBlackhole: Any?) -> PacketTunnelIPv6Mode {
+        if let raw = value as? String, let mode = PacketTunnelIPv6Mode(rawValue: raw) {
+            return mode
+        }
+        if let legacy = legacyBlackhole as? Bool {
+            return legacy ? .blackhole : .passthrough
+        }
+        if let legacyNumber = legacyBlackhole as? NSNumber {
+            return legacyNumber.boolValue ? .blackhole : .passthrough
+        }
+        return .passthrough
     }
 
     var tunnelDNSServers: [String] {
@@ -288,7 +310,8 @@ enum PacketTunnelConfigurationManager {
         tunnelMTU: Int = PacketTunnelConfigurationSnapshot.defaultTunnelMTU,
         packetEngine: String = "hev",
         hevLibraryDirectory: String? = nil,
-        hevUDPMode: String = "tcp"
+        hevUDPMode: String = "udp",
+        ipv6Mode: PacketTunnelIPv6Mode = .passthrough
     ) async throws {
         let manager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
@@ -305,12 +328,11 @@ enum PacketTunnelConfigurationManager {
             "socksPort": socksPort,
             "dnsOverHTTPSURL": "https://1.1.1.1/dns-query",
             "excludedIPv4Addresses": excludedIPv4Addresses,
-            "suppressIPv6DNS": true,
             "enableFakeIPDNS": true,
-            "enableUDPRelay": false,
+            "enableUDPRelay": true,
             "enableProxySettings": false,
             "enableDNSNetworkFallback": false,
-            "enableIPv6Blackhole": true,
+            "ipv6Mode": ipv6Mode.rawValue,
             "hevUDPMode": hevUDPMode
         ]
         if let hevLibraryDirectory {

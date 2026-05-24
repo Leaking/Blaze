@@ -8,6 +8,21 @@ enum PacketTunnelEngineKind: String, Sendable {
     case hev
 }
 
+/// How the tunnel treats IPv6 traffic.
+///
+/// - `passthrough`: the tunnel does NOT install an IPv6 default route. The OS
+///   keeps IPv6 on the physical interface, so IPv6-only sites work but IPv6
+///   destinations are not proxied. This is the pragmatic default — the older
+///   blackhole mode just dropped IPv6, breaking those sites entirely.
+/// - `blackhole`: legacy behavior. Tunnel installs an IPv6 default route and
+///   the engine returns ICMPv6 unreachable. AAAA/SVCB/HTTPS DNS records are
+///   answered empty so apps don't try IPv6 in the first place. Kept around as
+///   a diagnostic / safety mode.
+enum PacketTunnelIPv6Mode: String, Sendable {
+    case passthrough
+    case blackhole
+}
+
 struct PacketTunnelRuntimeConfiguration {
     static let nativeVirtualDNSServer = "198.18.0.2"
     static let hevMapDNSServer = "198.19.0.1"
@@ -22,14 +37,21 @@ struct PacketTunnelRuntimeConfiguration {
     var socksPort: Int
     var dnsOverHTTPSURL: URL
     var excludedIPv4Addresses: [String]
-    var suppressIPv6DNS: Bool
     var enableFakeIPDNS: Bool
     var enableUDPRelay: Bool
     var enableProxySettings: Bool
     var enableDNSNetworkFallback: Bool
-    var enableIPv6Blackhole: Bool
+    var ipv6Mode: PacketTunnelIPv6Mode
     var hevLibraryDirectory: String?
     var hevUDPMode: String
+
+    /// True when the tunnel should install an IPv6 default route and the
+    /// engine should reply to inbound IPv6 packets with ICMPv6 unreachable.
+    var enableIPv6Blackhole: Bool { ipv6Mode == .blackhole }
+
+    /// True when AAAA / SVCB / HTTPS DNS queries should be answered empty so
+    /// apps don't attempt IPv6 / HTTP-3 they have no way of reaching.
+    var suppressIPv6DNS: Bool { ipv6Mode == .blackhole }
 
     init(providerConfiguration: [String: Any]?) {
         let engineName = Self.stringValue(providerConfiguration?["packetEngine"], defaultValue: "native")
@@ -42,14 +64,29 @@ struct PacketTunnelRuntimeConfiguration {
         let dnsURL = Self.stringValue(providerConfiguration?["dnsOverHTTPSURL"], defaultValue: "https://1.1.1.1/dns-query")
         dnsOverHTTPSURL = URL(string: dnsURL) ?? URL(string: "https://1.1.1.1/dns-query")!
         excludedIPv4Addresses = Self.stringArrayValue(providerConfiguration?["excludedIPv4Addresses"])
-        suppressIPv6DNS = Self.boolValue(providerConfiguration?["suppressIPv6DNS"], defaultValue: true)
         enableFakeIPDNS = Self.boolValue(providerConfiguration?["enableFakeIPDNS"], defaultValue: true)
-        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: false)
+        enableUDPRelay = Self.boolValue(providerConfiguration?["enableUDPRelay"], defaultValue: true)
         enableProxySettings = Self.boolValue(providerConfiguration?["enableProxySettings"], defaultValue: false)
         enableDNSNetworkFallback = Self.boolValue(providerConfiguration?["enableDNSNetworkFallback"], defaultValue: false)
-        enableIPv6Blackhole = Self.boolValue(providerConfiguration?["enableIPv6Blackhole"], defaultValue: true)
+        ipv6Mode = Self.ipv6Mode(
+            from: providerConfiguration?["ipv6Mode"],
+            legacyBlackhole: providerConfiguration?["enableIPv6Blackhole"]
+        )
         hevLibraryDirectory = Self.optionalStringValue(providerConfiguration?["hevLibraryDirectory"])
-        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "tcp")
+        hevUDPMode = Self.stringValue(providerConfiguration?["hevUDPMode"], defaultValue: "udp")
+    }
+
+    private static func ipv6Mode(from value: Any?, legacyBlackhole: Any?) -> PacketTunnelIPv6Mode {
+        if let raw = value as? String, let mode = PacketTunnelIPv6Mode(rawValue: raw) {
+            return mode
+        }
+        if let legacy = legacyBlackhole as? Bool {
+            return legacy ? .blackhole : .passthrough
+        }
+        if let legacyNumber = legacyBlackhole as? NSNumber {
+            return legacyNumber.boolValue ? .blackhole : .passthrough
+        }
+        return .passthrough
     }
 
     var tunnelDNSServers: [String] {
