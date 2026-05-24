@@ -5,7 +5,13 @@ import PackageDescription
 let package = Package(
     name: "Blaze",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
+        // iOS support is library-only: the `blaze` host app and
+        // `BlazeTunnelExtension` System Extension are mac-only and won't
+        // compile for iOS, but iOS consumers (the Xcode-driven iPad target,
+        // see project.yml) only pull in the ProxyWorkbenchCore library
+        // product so those executables are never built for iOS.
+        .iOS(.v15)
     ],
     products: [
         .library(name: "ProxyWorkbenchCore", targets: ["ProxyWorkbenchCore"]),

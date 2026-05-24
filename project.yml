@@ -23,6 +23,14 @@ options:
   generateEmptyDirectories: true
   createIntermediateGroups: true
 
+# Pull the existing SwiftPM package in by path. The shared core (profile
+# parsing, rule engine, LeafConfiguration rendering, …) is platform-clean
+# now (see Package.swift's iOS platform + #if os(macOS) guards in
+# Sources/ProxyWorkbenchCore/{LeafController,MacProxySetupCommands}.swift).
+packages:
+  Blaze:
+    path: .
+
 settings:
   base:
     SWIFT_VERSION: "5.10"
@@ -60,6 +68,8 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     dependencies:
       - target: BlazeTunnelExtensionIOS
+      - package: Blaze
+        product: ProxyWorkbenchCore
 
   BlazeTunnelExtensionIOS:
     type: app-extension

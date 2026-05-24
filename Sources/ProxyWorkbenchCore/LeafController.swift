@@ -2,7 +2,9 @@ import Darwin
 import Foundation
 import os.log
 
+#if os(macOS)
 private let leafLogger = Logger(subsystem: "com.chenhuazhao.blaze", category: "Leaf")
+#endif
 
 /// Configuration that the controller materialises into a leaf `.conf` file
 /// before launching the binary. Values map 1:1 onto leaf's General/Proxy/Rule
@@ -199,6 +201,13 @@ public struct LeafConfiguration: Sendable, Hashable {
         return "\(p.tag) = \(fields.joined(separator: ", "))"
     }
 }
+
+#if os(macOS)
+
+// LeafController spawns the `leaf` Mach-O binary as a subprocess and watches
+// it. The iOS App Extension sandbox forbids fork/exec, so this whole stack
+// is mac-only — iOS uses LeafFFIController (in BlazeTunnelExtensionIOS)
+// which calls leaf-ffi's `leaf_run_with_options` instead.
 
 /// Manages the lifecycle of an embedded `leaf` binary running as a subprocess.
 /// Generates the leaf `.conf` file from a `LeafConfiguration`, launches the
@@ -545,3 +554,5 @@ public actor LeafController {
         }
     }
 }
+
+#endif // os(macOS)

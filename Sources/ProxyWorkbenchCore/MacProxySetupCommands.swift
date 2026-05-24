@@ -1,5 +1,12 @@
 import Foundation
 
+#if os(macOS)
+
+// MacProxySetupCommands wraps `networksetup` / `scutil` invocations to flip
+// the system-wide HTTP/SOCKS5 proxy on macOS. iOS has no system-wide proxy
+// switch — the packet tunnel is the only way to take over traffic — so the
+// whole file is mac-only.
+
 public struct MacProxySetupCommands: Hashable, Sendable {
     public var networkService: String
     public var httpPort: Int
@@ -341,3 +348,5 @@ private extension MacProxyEndpointStatus {
         return invocations
     }
 }
+
+#endif // os(macOS)
