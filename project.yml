@@ -1,0 +1,83 @@
+# Xcode project spec for the iPad / iOS build of Blaze.
+#
+# Why an Xcode project at all: the macOS build is SwiftPM-driven (Package.swift +
+# scripts/build-app.sh) and stays that way. iOS needs three things SwiftPM 6
+# can't produce — an `.appex` PacketTunnelProvider extension, embedded
+# provisioning profiles, and on-device codesigning — so we drive the iPad
+# build from a generated `.xcodeproj` instead.
+#
+# Generate with: `xcodegen` (or `xcodegen generate`). The resulting
+# `Blaze.xcodeproj` is gitignored — only this YAML is the source of truth.
+#
+# Both native dependencies live as static .xcframeworks under Vendor/:
+#   * Leaf.xcframework            — leaf-ffi (Trojan / SS / WS outbounds)
+#   * HevSocks5Tunnel.xcframework — TUN ↔ SOCKS5 bridge
+# Generate them with the scripts in scripts/dev/build-{leaf-ffi,hev-socks5-tunnel}-ios.sh.
+
+name: Blaze
+options:
+  bundleIdPrefix: com.chenhuazhao.blaze.ios
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "15.0"
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    # Code signing is left to Xcode's automatic flow with the user's team.
+    # For Simulator-only validation no signing happens, so the team can stay
+    # empty until you build for a real device.
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: HYF3XBWBL2
+    # Turn on stricter concurrency where SwiftPM had it.
+    SWIFT_STRICT_CONCURRENCY: targeted
+    # iPad + iPhone (1 = iPhone, 2 = iPad). iPad-first but no reason to lock
+    # iPhones out for daily use.
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # We're on Apple Silicon; the x86_64 simulator slice is dead weight and
+    # would need separate cross-compilation of leaf-ffi for x86_64-apple-ios.
+    # Drop it everywhere — the only simulator that matters is arm64.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+
+targets:
+
+  BlazeIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/BlazeIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chenhuazhao.blaze.ios
+        INFOPLIST_FILE: Sources/BlazeIOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Entitlements/BlazeIOS.entitlements
+        # Embed the .appex so the system can launch the tunnel provider.
+        # XcodeGen handles the actual embed phase automatically when an
+        # app-extension target is listed as a dependency.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    dependencies:
+      - target: BlazeTunnelExtensionIOS
+
+  BlazeTunnelExtensionIOS:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/BlazeTunnelExtensionIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chenhuazhao.blaze.ios.tunnel
+        INFOPLIST_FILE: Sources/BlazeTunnelExtensionIOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Entitlements/BlazeTunnelExtensionIOS.entitlements
+        SKIP_INSTALL: YES
+    dependencies:
+      # Static xcframeworks — `embed: false` because the .a is statically
+      # linked into the extension's Mach-O at build time; nothing to embed
+      # at runtime. If we ever switch to dynamic .frameworks this flips.
+      - framework: Vendor/Leaf/ios/Leaf.xcframework
+        embed: false
+      - framework: Vendor/HevSocks5Tunnel/ios/HevSocks5Tunnel.xcframework
+        embed: false
+      - sdk: NetworkExtension.framework
