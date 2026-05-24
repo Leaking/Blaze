@@ -17,3 +17,17 @@ from `Contents/Frameworks`.
 
 The generated dylibs are local build artifacts and are intentionally ignored by
 Git.
+
+## iOS / iPadOS
+
+iOS App Extensions can't `dlopen` a dylib from the bundle, so the iPad target
+links the static archive instead. Build it with:
+
+```bash
+scripts/dev/build-hev-socks5-tunnel-ios.sh
+```
+
+The script reuses the same upstream pin and runs upstream's `build-apple.sh`,
+producing `Vendor/HevSocks5Tunnel/ios/HevSocks5Tunnel.xcframework` with iOS,
+iOS Simulator, macOS and tvOS slices. Only the iOS slices are used by the
+iPad target; the rest are leftover from upstream's script and harmless.
